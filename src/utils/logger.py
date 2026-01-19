@@ -1,7 +1,23 @@
 import logging
 import os
-from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime
+
+class DailyFileHandler(logging.FileHandler):
+    def __init__(self, log_dir, encoding="utf-8"):
+        self.log_dir = log_dir
+        self.encoding = encoding
+        self.current_date = datetime.now().strftime("%Y-%m-%d")
+        log_file = os.path.join(self.log_dir, f"{self.current_date}.log")
+        super().__init__(log_file, encoding=self.encoding)
+
+    def emit(self, record):
+        new_date = datetime.now().strftime("%Y-%m-%d")
+        if new_date != self.current_date:
+            self.current_date = new_date
+            self.baseFilename = os.path.abspath(os.path.join(self.log_dir, f"{self.current_date}.log"))
+            self.close()
+            # The file will be reopened by the logging system on the next write
+        super().emit(record)
 
 class Logger:
     _instance = None
@@ -25,17 +41,9 @@ class Logger:
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
 
-        # Daily Rotation Handler
-        log_file = os.path.join(log_dir, "bot.log")
-        handler = TimedRotatingFileHandler(
-            log_file,
-            when="midnight",
-            interval=1,
-            backupCount=30,
-            encoding="utf-8"
-        )
+        # Date-based Filename (yyyy-mm-dd.log) with automatic rotation
+        handler = DailyFileHandler(log_dir)
         handler.setFormatter(formatter)
-        handler.suffix = "%Y-%m-%d" # For rotation suffix
 
         # Console Handler
         console_handler = logging.StreamHandler()
