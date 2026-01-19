@@ -6,8 +6,16 @@ from src.config import Config
 from src.utils.logger import logger
 
 class Downloader:
+    """Wrapper for yt-dlp to extract info and download videos asynchronously."""
+    
     def __init__(self):
+        # Check if ffmpeg is available
+        import shutil
+        if not shutil.which("ffmpeg"):
+            logger.error("FFmpeg not found! High-quality downloads will fail. Please install ffmpeg.")
+            
         self.ydl_opts = {
+            # Best quality mp4 merged with m4a audio
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'outtmpl': os.path.join(Config.DOWNLOAD_DIR, '%(id)s.%(ext)s'),
             'cookiefile': Config.COOKIES_FILE if os.path.exists(Config.COOKIES_FILE) else None,

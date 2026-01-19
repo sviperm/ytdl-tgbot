@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: ytdl-tgbot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./bot_database.db:/app/bot_database.db
+      - ./log:/app/log
+      - ./downloads:/app/downloads
+      - ./cookies.txt:/app/cookies.txt
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
