@@ -73,9 +73,11 @@ async def video_link_handler(client: Client, message: Message):
     video_id = info.get('id')
     platform = info.get('extractor')
     title = info.get('title')
-    duration = info.get('duration')
+    duration = int(info.get('duration', 0))
+    width = int(info.get('width', 0))
+    height = int(info.get('height', 0))
 
-    logger.info(f"Extracted: {title} ({platform}) - Duration: {duration}s")
+    logger.info(f"Extracted: {title} ({platform}) - {width}x{height} - Duration: {duration}s")
 
     # Check database
     cached_file_id = await db.get_video(video_id)
@@ -86,7 +88,11 @@ async def video_link_handler(client: Client, message: Message):
             await client.send_video(
                 chat_id=message.chat.id,
                 video=cached_file_id,
-                caption=title
+                caption=title,
+                duration=duration,
+                width=width,
+                height=height,
+                supports_streaming=True
             )
             logger.info(f"Cached video {video_id} sent successfully to user {message.from_user.id}")
             return
@@ -103,6 +109,12 @@ async def video_link_handler(client: Client, message: Message):
         await status_message.edit_text("Download failed.")
         return
 
+    # Update width/height if info changed after download
+    if info:
+        width = int(info.get('width', width))
+        height = int(info.get('height', height))
+        duration = int(info.get('duration', duration))
+
     file_size = os.path.getsize(file_path) / (1024 * 1024)
     logger.info(f"Download finished: {file_path} ({file_size:.2f} MB)")
 
@@ -117,6 +129,9 @@ async def video_link_handler(client: Client, message: Message):
             chat_id=message.chat.id,
             video=file_path,
             caption=title,
+            duration=duration,
+            width=width,
+            height=height,
             supports_streaming=True,
             progress=progress,
             progress_args=(status_message, start_time)
