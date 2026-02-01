@@ -217,5 +217,6 @@ __marimo__/
 
 # Private data
 cookies.txt
+cookies.bkp.txt
 *.db
 ytdl_bot.session*
