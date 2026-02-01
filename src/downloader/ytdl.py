@@ -20,11 +20,12 @@ class Downloader:
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'outtmpl': os.path.join(Config.DOWNLOAD_DIR, '%(id)s.%(ext)s'),
             'cookiefile': Config.COOKIES_FILE if os.path.exists(Config.COOKIES_FILE) else None,
-            'quiet': True,
-            'no_warnings': True,
+            # 'quiet': True,
+            # 'no_warnings': True,
             'extractor_args': {
                 'youtube': {
                     'player_client': ['android', 'ios']
+                    # 'player_client': ['web']
                 }
             },
         }
