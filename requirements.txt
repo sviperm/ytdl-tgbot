@@ -4,4 +4,5 @@ Pyrogram==2.0.106
 PySocks==1.7.1
 python-dotenv==1.2.1
 TgCrypto==1.2.5
-yt-dlp==2025.12.8
+yt-dlp==2026.6.9
+bgutil-ytdlp-pot-provider

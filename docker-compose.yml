@@ -1,17 +1,26 @@
 version: '3.8'
 
 services:
+  pot-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    container_name: bgutil-provider
+    init: true
+    restart: always
+
   bot:
     build: .
     container_name: ytdl-tgbot
     restart: always
+    depends_on:
+      - pot-provider
+    environment:
+      - POT_PROVIDER_URL=http://pot-provider:4416
     env_file:
       - .env
     volumes:
-      - ./bot_database.db:/app/bot_database.db
+      - ./data:/app/data
       - ./log:/app/log
       - ./downloads:/app/downloads
-      - ./cookies.txt:/app/cookies.txt
     logging:
       driver: "json-file"
       options:

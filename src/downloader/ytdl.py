@@ -16,17 +16,24 @@ class Downloader:
             logger.error("FFmpeg not found! High-quality downloads will fail. Please install ffmpeg.")
 
         self.ydl_opts = {
-            # Best quality mp4 merged with m4a audio
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            # Prefer H.264 mp4 + m4a (best for Telegram native streaming/thumbnails),
+            # capped at 1080p on the long edge so vertical/shorts keep full resolution.
+            # `<=?` keeps formats whose dimensions are unknown (e.g. some non-YouTube sites).
+            'format': (
+                'bestvideo[width<=?1920][height<=?1920][ext=mp4]+bestaudio[ext=m4a]/'
+                'bestvideo[width<=?1920][height<=?1920]+bestaudio/'
+                'best[width<=?1920][height<=?1920]/best'
+            ),
             'outtmpl': os.path.join(Config.DOWNLOAD_DIR, '%(id)s.%(ext)s'),
-            'cookiefile': Config.COOKIES_FILE if os.path.exists(Config.COOKIES_FILE) else None,
+            'cookiefile': Config.COOKIES_FILE if os.path.isfile(Config.COOKIES_FILE) else None,
             # 'quiet': True,
             # 'no_warnings': True,
             'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'ios']
-                    # 'player_client': ['web']
-                }
+                # Let yt-dlp use its current default YouTube clients (tv/web_safari) and
+                # fetch GVS PO tokens from the bgutil HTTP provider to unlock 1080p.
+                'youtubepot-bgutilhttp': {
+                    'base_url': [Config.POT_PROVIDER_URL],
+                },
             },
         }
 

@@ -27,13 +27,21 @@ class Config:
         if i.strip().isdigit()
     ]
     
+    # Persistent state lives in a single mounted directory (avoids the Docker
+    # single-file bind-mount footgun where a missing file is created as a dir).
+    DATA_DIR = "data"
+
     # Database settings
-    DB_PATH = "bot_database.db"
-    
+    DB_PATH = os.path.join(DATA_DIR, "bot_database.db")
+
     # Download settings
     DOWNLOAD_DIR = "downloads"
-    COOKIES_FILE = "cookies.txt"
-    
+    COOKIES_FILE = os.path.join(DATA_DIR, "cookies.txt")
+
+    # PO Token provider (bgutil HTTP server) for unlocking high-quality YouTube formats
+    POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://127.0.0.1:4416")
+
     # Ensure mandatory directories exist
+    os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     os.makedirs("log", exist_ok=True)

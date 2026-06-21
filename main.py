@@ -1,4 +1,12 @@
 import asyncio
+
+# Pyrogram 2.0.106 calls asyncio.get_event_loop() at import time. Python 3.14 removed
+# the implicit creation of a loop in the main thread, so ensure one exists first.
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 from pyrogram.client import Client
 from src.config import Config
 from src.database.models import Database

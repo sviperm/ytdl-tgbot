@@ -220,3 +220,5 @@ cookies.txt
 cookies.bkp.txt
 *.db
 ytdl_bot.session*
+# Persistent state (db, cookies)
+data/
