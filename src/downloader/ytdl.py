@@ -1,6 +1,7 @@
 import yt_dlp
 import asyncio
 import os
+import subprocess
 from src.config import Config
 
 from src.utils.logger import logger
@@ -77,3 +78,33 @@ class Downloader:
             except Exception as e:
                 logger.error(f"Error during download for {url}: {e}")
                 return None, None
+
+    async def make_thumbnail(self, video_path):
+        return await asyncio.to_thread(self._make_thumbnail, video_path)
+
+    def _make_thumbnail(self, video_path):
+        """Extract a small JPEG frame for Telegram's video preview.
+
+        Telegram bakes the supplied thumb into the uploaded file, so it is
+        preserved in the cached file_id and shows up on later cache hits.
+        Must be JPEG, <=200KB and <=320px on the longest side.
+        """
+        thumb_path = os.path.splitext(video_path)[0] + "_thumb.jpg"
+        for seek in ("3", "0"):  # skip a likely-black first frame, fall back to 0
+            try:
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-ss", seek, "-i", video_path,
+                        "-vframes", "1",
+                        "-vf", "scale=320:320:force_original_aspect_ratio=decrease",
+                        thumb_path,
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+                if os.path.isfile(thumb_path) and os.path.getsize(thumb_path) > 0:
+                    logger.info(f"Generated thumbnail: {thumb_path}")
+                    return thumb_path
+            except Exception as e:
+                logger.warning(f"Thumbnail generation failed (seek={seek}) for {video_path}: {e}")
+        return None

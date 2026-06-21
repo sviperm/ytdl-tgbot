@@ -129,11 +129,14 @@ async def video_link_handler(client: Client, message: Message):
     file_size = os.path.getsize(file_path) / (1024 * 1024)
     logger.info(f"Download finished: {file_path} ({file_size:.2f} MB)")
 
+    # Generate a thumbnail so the preview is baked into the file_id (and survives caching)
+    thumb_path = await downloader.make_thumbnail(file_path)
+
     await status_message.edit_text("Uploading to Telegram...")
     global last_update_time
     last_update_time = 0
     start_time = time.time()
-    
+
     logger.info(f"Starting upload to Telegram: {title} ({file_size:.2f} MB)")
     try:
         sent_video = await client.send_video(
@@ -141,6 +144,7 @@ async def video_link_handler(client: Client, message: Message):
             video=file_path,
             caption=build_caption(title, url),
             parse_mode=ParseMode.HTML,
+            thumb=thumb_path,
             duration=duration,
             width=width,
             height=height,
@@ -148,7 +152,7 @@ async def video_link_handler(client: Client, message: Message):
             progress=progress,
             progress_args=(status_message, start_time)
         )
-        
+
         await db.add_video(video_id, platform, sent_video.video.file_id, title)
         logger.info(f"Upload successful: {title} (ID: {sent_video.video.file_id})")
         await status_message.delete()
@@ -156,6 +160,7 @@ async def video_link_handler(client: Client, message: Message):
         logger.error(f"Upload failed for {title}: {str(e)}")
         await status_message.edit_text(f"Upload failed: {str(e)}")
     finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            logger.info(f"Cleaned up local file: {file_path}")
+        for path in (file_path, thumb_path):
+            if path and os.path.exists(path):
+                os.remove(path)
+                logger.info(f"Cleaned up local file: {path}")
