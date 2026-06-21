@@ -126,6 +126,10 @@ async def video_link_handler(client: Client, message: Message):
         height = int(info.get('height', height))
         duration = int(info.get('duration', duration))
 
+    # Transcode to H.264 if needed (VP9/AV1 won't play on iOS)
+    await status_message.edit_text("Processing video...")
+    file_path = await downloader.ensure_compatible(file_path)
+
     file_size = os.path.getsize(file_path) / (1024 * 1024)
     logger.info(f"Download finished: {file_path} ({file_size:.2f} MB)")
 
