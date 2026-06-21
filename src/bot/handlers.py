@@ -1,6 +1,8 @@
 import os
 import time
+import html
 from pyrogram import Client, filters
+from pyrogram.enums import ParseMode
 from pyrogram.types import Message
 from src.downloader.ytdl import Downloader
 from src.database.models import Database
@@ -9,6 +11,13 @@ from src.utils.logger import logger
 
 downloader = Downloader()
 db = Database()
+
+
+def build_caption(title, url):
+    """Caption with the title as a clickable link back to the source video."""
+    safe_title = html.escape(title or "Video")
+    safe_url = html.escape(url, quote=True)
+    return f'<a href="{safe_url}">{safe_title}</a>'
 
 # Track the last update time globally for this upload
 last_update_time = 0
@@ -88,13 +97,15 @@ async def video_link_handler(client: Client, message: Message):
             await client.send_video(
                 chat_id=message.chat.id,
                 video=cached_file_id,
-                caption=title,
+                caption=build_caption(title, url),
+                parse_mode=ParseMode.HTML,
                 duration=duration,
                 width=width,
                 height=height,
                 supports_streaming=True
             )
             logger.info(f"Cached video {video_id} sent successfully to user {message.from_user.id}")
+            await status_message.delete()
             return
         except Exception as e:
             logger.warning(f"Failed to send cached video {video_id}: {str(e)}. Redownloading...")
@@ -128,7 +139,8 @@ async def video_link_handler(client: Client, message: Message):
         sent_video = await client.send_video(
             chat_id=message.chat.id,
             video=file_path,
-            caption=title,
+            caption=build_caption(title, url),
+            parse_mode=ParseMode.HTML,
             duration=duration,
             width=width,
             height=height,
