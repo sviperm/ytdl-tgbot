@@ -11,6 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Deno: JavaScript runtime yt-dlp needs to solve YouTube signature / n-param
+# challenges (via yt-dlp-ejs). Without it YouTube downloads fail with HTTP 403.
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+
 # Set the working directory in the container
 WORKDIR /app
 
