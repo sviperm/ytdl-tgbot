@@ -82,9 +82,10 @@ async def video_link_handler(client: Client, message: Message):
     video_id = info.get('id')
     platform = info.get('extractor')
     title = info.get('title')
-    duration = int(info.get('duration', 0))
-    width = int(info.get('width', 0))
-    height = int(info.get('height', 0))
+    # `or 0` guards against keys present with a None value (e.g. PornHub width)
+    duration = int(info.get('duration') or 0)
+    width = int(info.get('width') or 0)
+    height = int(info.get('height') or 0)
 
     logger.info(f"Extracted: {title} ({platform}) - {width}x{height} - Duration: {duration}s")
 
@@ -122,13 +123,17 @@ async def video_link_handler(client: Client, message: Message):
 
     # Update width/height if info changed after download
     if info:
-        width = int(info.get('width', width))
-        height = int(info.get('height', height))
-        duration = int(info.get('duration', duration))
+        width = int(info.get('width') or width)
+        height = int(info.get('height') or height)
+        duration = int(info.get('duration') or duration)
 
-    # Transcode to H.264 if needed (VP9/AV1 won't play on iOS)
+    # Trim a detected PornHub intro and/or transcode to H.264 (VP9/AV1 won't play on iOS)
     await status_message.edit_text("Processing video...")
-    file_path = await downloader.ensure_compatible(file_path)
+    file_path = await downloader.process_video(file_path)
+    # Duration may have changed if an intro was trimmed — re-probe for an accurate value
+    probed_duration = await downloader.probe_duration(file_path)
+    if probed_duration:
+        duration = probed_duration
 
     file_size = os.path.getsize(file_path) / (1024 * 1024)
     logger.info(f"Download finished: {file_path} ({file_size:.2f} MB)")

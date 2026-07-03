@@ -44,6 +44,8 @@ Request flow (in `src/bot/handlers.py`, `video_link_handler`):
 4. `downloader.download(url)` downloads to `downloads/`, then `client.send_video(...)` uploads with a live progress callback.
 5. On success, store `(video_id, platform, file_id, title)` in the DB and delete the local file in a `finally` block.
 
+After download, `handlers.py` calls `downloader.process_video()`, which trims a detected **PornHub "Community" intro** and/or transcodes to H.264 in one ffmpeg pass (H.264 files with no intro are returned untouched — no wasteful re-encode). The intro is detected by normalized audio cross-correlation (numpy) against the bundled reference `assets/ph_community_intro.wav` — only that fixed bumper is removed (not sponsor ads like the 1win insert). The trimmed duration is re-probed so Telegram shows the correct length.
+
 `src/downloader/ytdl.py` (`Downloader`) wraps `yt-dlp`. Blocking yt-dlp calls run via `asyncio.to_thread` to avoid blocking the event loop. Format is `bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best` (requires ffmpeg to merge). YouTube uses the `android`/`ios` player clients. `cookies.txt` in the repo root, if present, is passed to yt-dlp for restricted content. After a merge the output extension can change, so `_download` falls back to scanning `DOWNLOAD_DIR` for a file matching the video id.
 
 `src/database/models.py` (`Database`) is async (`aiosqlite`) with a single `videos` table. Each method opens and closes its own connection. `add_video` uses `INSERT OR IGNORE` on the unique `video_id`.
