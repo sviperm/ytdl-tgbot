@@ -8,17 +8,24 @@ A Telegram bot that downloads videos via `yt-dlp` and re-uploads them as native 
 
 ## Commands
 
-```bash
-# Run locally (requires a populated .env and ffmpeg on PATH)
-python main.py
+Local iteration (fast, no image rebuild) is driven by the `Makefile`:
 
-# Run via Docker (preferred for deployment)
-docker-compose up -d --build
-docker-compose logs -f
-docker-compose down
+```bash
+make install   # one-time: install runtime + dev deps into ./venv
+make dev       # run locally with hot-reload (edit a .py -> auto-restart)
+make run       # run locally once, no hot-reload
+make prod      # build & (re)start the Docker stack (production)
+make logs      # tail production bot logs
+make stop      # docker compose down
 ```
 
-There is no test suite, linter, or build step. `.python-version` pins 3.14.6 for local dev, but the Docker image runs on `python:3.11-slim`.
+`make dev`/`make run` start the `pot-provider` container (YouTube needs it) and
+**stop the dockerized prod bot first** — the same bot token can't run twice. They
+then run `python main.py` from `./venv`. Requires `ffmpeg` and `deno` on PATH
+locally (both needed for YouTube: transcode + JS-challenge solving).
+
+There is no test suite or linter. Both local dev and the Docker image run on
+`python:3.14`.
 
 ## Configuration
 

@@ -30,8 +30,7 @@ class Logger:
 
     def _setup_logger(self):
         log_dir = "log"
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
+        os.makedirs(log_dir, exist_ok=True)
 
         self.logger = logging.getLogger("ytdl_bot")
         self.logger.setLevel(logging.INFO)

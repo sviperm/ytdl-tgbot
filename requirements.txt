@@ -6,4 +6,5 @@ python-dotenv==1.2.1
 TgCrypto==1.2.5
 yt-dlp
 yt-dlp-ejs
+curl_cffi
 bgutil-ytdlp-pot-provider

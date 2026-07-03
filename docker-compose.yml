@@ -1,20 +1,25 @@
-version: '3.8'
-
 services:
   pot-provider:
     image: brainicism/bgutil-ytdlp-pot-provider:latest
     container_name: bgutil-provider
     init: true
     restart: always
+    # Published on localhost only so `python main.py` (local dev) can reach it too.
+    ports:
+      - "127.0.0.1:4416:4416"
 
   bot:
     build: .
     container_name: ytdl-tgbot
     restart: always
+    # Run as the host user (uid 1000) so files written to the mounted volumes
+    # (data/, downloads/, session) stay user-owned and don't clash with local dev.
+    user: "1000:1000"
     depends_on:
       - pot-provider
     environment:
       - POT_PROVIDER_URL=http://pot-provider:4416
+      - HOME=/tmp  # writable home for Deno's cache when running as non-root
     env_file:
       - .env
     volumes:
