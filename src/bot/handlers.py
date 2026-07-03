@@ -1,10 +1,12 @@
 import os
 import time
 import html
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
-from pyrogram.types import Message
+from pyrogram.types import Message, InputMediaPhoto, InputMediaVideo
 from src.downloader.ytdl import Downloader
+from src.downloader import instagram
 from src.database.models import Database
 from src.config import Config
 from src.utils.logger import logger
@@ -13,11 +15,112 @@ downloader = Downloader()
 db = Database()
 
 
+# Query params that are pure tracking; stripped from source links in captions.
+_TRACKING_PARAMS = {
+    "igsh", "igshid", "img_index", "si", "feature",
+    "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+}
+
+
+def clean_url(url):
+    """Drop tracking query params (igsh, img_index, utm_*, ...) from a URL."""
+    parts = urlsplit(url)
+    kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if k.lower() not in _TRACKING_PARAMS]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(kept), parts.fragment))
+
+
 def build_caption(title, url):
     """Caption with the title as a clickable link back to the source video."""
     safe_title = html.escape(title or "Video")
-    safe_url = html.escape(url, quote=True)
+    safe_url = html.escape(clean_url(url), quote=True)
     return f'<a href="{safe_url}">{safe_title}</a>'
+
+
+def build_ig_caption(caption_text, url):
+    """Media-group caption: a source link plus the post's caption (Telegram cap 1024)."""
+    link = f'<a href="{html.escape(clean_url(url), quote=True)}">Instagram</a>'
+    if not caption_text:
+        return link
+    body = caption_text[:900].rstrip()
+    if len(caption_text) > 900:
+        body += "…"
+    return f"{html.escape(body)}\n\n{link}"
+
+
+async def handle_instagram(client: Client, message: Message, url: str):
+    """Fetch a public Instagram post (single or carousel) and send it as media."""
+    status = await message.reply_text("Fetching Instagram post...")
+    post = await instagram.fetch(url)
+    if not post or not post.get("media"):
+        logger.error(f"Instagram fetch returned nothing for {url}")
+        await status.edit_text(
+            "🔒 Couldn't fetch this Instagram post. It may be private/deleted, "
+            "or its video is login-gated from this server's IP."
+        )
+        return
+
+    media = post["media"]
+    caption = build_ig_caption(post.get("caption") or "", url)
+    logger.info(f"Instagram {post['shortcode']}: {len(media)} item(s)")
+    files = []   # (kind, path)
+    thumbs = []
+    try:
+        await status.edit_text(f"Downloading {len(media)} item(s)...")
+        for i, item in enumerate(media):
+            ext = ".mp4" if item["type"] == "video" else ".jpg"
+            dest = os.path.join(Config.DOWNLOAD_DIR, f"{post['shortcode']}_{i}{ext}")
+            await instagram.download_file(item["url"], dest)
+            if item["type"] == "video":
+                dest = await downloader.process_video(dest)  # H.264 for iOS + faststart
+            files.append((item["type"], dest))
+
+        await status.edit_text("Uploading...")
+        if len(files) == 1:
+            kind, path = files[0]
+            if kind == "video":
+                thumb = await downloader.make_thumbnail(path)
+                if thumb:
+                    thumbs.append(thumb)
+                await client.send_video(
+                    message.chat.id, path, caption=caption, parse_mode=ParseMode.HTML,
+                    thumb=thumb, supports_streaming=True,
+                )
+            else:
+                await client.send_photo(
+                    message.chat.id, path, caption=caption, parse_mode=ParseMode.HTML,
+                )
+        else:
+            group = []
+            for kind, path in files:
+                if kind == "video":
+                    thumb = await downloader.make_thumbnail(path)
+                    if thumb:
+                        thumbs.append(thumb)
+                    group.append(InputMediaVideo(path, thumb=thumb, supports_streaming=True))
+                else:
+                    group.append(InputMediaPhoto(path))
+            # Telegram allows max 10 items per group; caption goes on the first item.
+            first = True
+            for start in range(0, len(group), 10):
+                chunk = group[start:start + 10]
+                if first:
+                    chunk[0].caption = caption
+                    chunk[0].parse_mode = ParseMode.HTML
+                    first = False
+                await client.send_media_group(message.chat.id, chunk)
+        await status.delete()
+        logger.info(f"Instagram post {post['shortcode']} sent ({len(files)} item(s))")
+    except Exception as e:
+        logger.error(f"Instagram handling failed for {url}: {e}")
+        await status.edit_text(f"Failed to send Instagram post: {e}")
+    finally:
+        for _, path in files:
+            if path and os.path.exists(path):
+                os.remove(path)
+        for thumb in thumbs:
+            if thumb and os.path.exists(thumb):
+                os.remove(thumb)
 
 # Track the last update time globally for this upload
 last_update_time = 0
@@ -71,12 +174,28 @@ async def video_link_handler(client: Client, message: Message):
         return
 
     logger.info(f"New request from user {message.from_user.id}: {url}")
+
+    # Instagram posts (carousels/photos/reels) go through the no-login module,
+    # which sends the whole post as a media group with its caption.
+    if instagram.is_instagram_url(url):
+        await handle_instagram(client, message, url)
+        return
+
     status_message = await message.reply_text("Extracting info...")
-    
+
     info = await downloader.extract_info(url)
     if not info:
         logger.error(f"Failed to extract info for URL: {url}")
-        await status_message.edit_text("Failed to extract video info. Are you sure the link is valid?")
+        err = (downloader.last_extract_error or "").lower()
+        auth_markers = ("empty media response", "login required", "requires authentication",
+                        "cookies", "requested content is not available", "rate-limit",
+                        "sign in", "private")
+        if any(m in err for m in auth_markers):
+            await status_message.edit_text(
+                "🔒 This post requires login (e.g. Instagram now needs it) and can't be downloaded without an authenticated cookies file."
+            )
+        else:
+            await status_message.edit_text("Failed to extract video info. Are you sure the link is valid?")
         return
 
     video_id = info.get('id')

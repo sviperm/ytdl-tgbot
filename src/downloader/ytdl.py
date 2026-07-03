@@ -31,6 +31,9 @@ class Downloader:
         # Load the intro reference audio once (feature is disabled if missing).
         self._intro_ref = self._load_intro_ref()
 
+        # Last extraction error message, so the handler can craft a useful reply.
+        self.last_extract_error = None
+
         self.ydl_opts = {
             # Prefer H.264 (avc1) + AAC: the only codecs iOS/Telegram play everywhere
             # (VP9/AV1 freeze on iOS). Anything else is transcoded after download.
@@ -71,13 +74,22 @@ class Downloader:
     async def extract_info(self, url):
         return await asyncio.to_thread(self._extract_info, self._normalize_url(url))
 
+    def _apply_cookies(self):
+        """Pick up data/cookies.txt live, so it can be added/refreshed without a restart."""
+        self.ydl_opts['cookiefile'] = (
+            Config.COOKIES_FILE if os.path.isfile(Config.COOKIES_FILE) else None
+        )
+
     def _extract_info(self, url):
+        self.last_extract_error = None
+        self._apply_cookies()
         with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
             try:
                 logger.info(f"Extracting metadata for: {url}")
                 info = ydl.extract_info(url, download=False)
                 return info
             except Exception as e:
+                self.last_extract_error = str(e)
                 logger.error(f"Error during metadata extraction for {url}: {e}")
                 return None
 
@@ -85,6 +97,7 @@ class Downloader:
         return await asyncio.to_thread(self._download, self._normalize_url(url))
 
     def _download(self, url):
+        self._apply_cookies()
         with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
             try:
                 logger.info(f"Starting actual download for: {url}")
