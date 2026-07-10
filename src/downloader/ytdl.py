@@ -255,7 +255,12 @@ class Downloader:
         Runs in a single ffmpeg pass. If there's no intro to trim and the codec
         is already H.264, the file is returned untouched (no wasteful re-encode).
         """
-        trim = self._detect_intro(video_path)
+        # Intro removal is DISABLED for now: trimming forces a full re-encode,
+        # which is far too slow on long videos (~20 min for a 25-min clip) for
+        # little benefit. To re-enable, restore the line below (and see
+        # _detect_intro / assets/ph_community_intro.wav).
+        # trim = self._detect_intro(video_path)
+        trim = 0.0
         vcodec = self._probe_vcodec(video_path)
         is_h264 = vcodec.startswith("h264") or vcodec.startswith("avc")
 
