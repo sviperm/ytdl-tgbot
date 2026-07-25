@@ -1,6 +1,7 @@
 import os
+from pathlib import Path
 
-from src.services.ytdlp import YtDlpClient, FORMAT
+from src.services.ytdlp import YtDlpClient, FORMAT, is_auth_error
 
 
 class FakeYDL:
@@ -21,10 +22,12 @@ class FakeYDL:
     def extract_info(self, url, download=False):
         if url == "boom":
             raise RuntimeError("empty media response")
+        if url == "nope":
+            raise RuntimeError("Unsupported URL")
         return {"id": "vid1", "extractor": "youtube", "title": "T"}
 
     def prepare_filename(self, info):
-        return os.path.join(self.opts["outtmpl"].rsplit("/", 1)[0], "vid1.mp4")
+        return os.path.join(os.path.dirname(self.opts["outtmpl"]), "vid1.mp4")
 
 
 def test_cookiefile_toggles_on_valid_file(tmp_dirs, monkeypatch):
@@ -61,20 +64,63 @@ def test_extractor_args_merged_only_when_given(tmp_dirs):
     assert client._opts(args)["extractor_args"] == args
 
 
-def test_extract_info_records_error(tmp_dirs, monkeypatch):
+def test_outtmpl_only_set_for_a_download(tmp_dirs, tmp_path):
+    client = YtDlpClient()
+    # extraction writes nothing, so it gets no output template at all
+    assert "outtmpl" not in client._opts()
+    opts = client._opts(None, str(tmp_path / "job"))
+    assert opts["outtmpl"] == os.path.join(str(tmp_path / "job"), "%(id)s.%(ext)s")
+
+
+def test_extract_info_returns_error_instead_of_storing_it(tmp_dirs, monkeypatch):
     monkeypatch.setattr("src.services.ytdlp.yt_dlp.YoutubeDL", FakeYDL)
     client = YtDlpClient()
-    assert client._extract_info("boom", None) is None
-    assert "empty media response" in client.last_extract_error
+    info, error = client._extract_info("boom", None)
+    assert info is None
+    assert "empty media response" in error
+    # nothing about the failure is left on the shared client
+    assert not hasattr(client, "last_extract_error")
+    info, error = client._extract_info("http://ok", None)
+    assert info["id"] == "vid1" and error is None
 
 
-def test_download_id_prefix_scan_fallback(tmp_dirs, monkeypatch):
-    from src.config import Config
+def test_is_auth_error_heuristic():
+    assert is_auth_error("ERROR: Empty media response")
+    assert is_auth_error("Sign in to confirm your age")
+    assert is_auth_error("This video is private")
+    assert not is_auth_error("Unsupported URL: http://x")
+    assert not is_auth_error(None)
+
+
+def test_download_id_prefix_scan_fallback(tmp_dirs, monkeypatch, tmp_path):
     monkeypatch.setattr("src.services.ytdlp.yt_dlp.YoutubeDL", FakeYDL)
+    work = tmp_path / "job"
+    work.mkdir()
     # prepare_filename returns vid1.mp4 but the real merged file is vid1.mkv
-    real = os.path.join(Config.DOWNLOAD_DIR, "vid1.mkv")
-    open(real, "wb").write(b"data")
+    real = str(work / "vid1.mkv")
+    (work / "vid1.mkv").write_bytes(b"data")
     client = YtDlpClient()
-    path, info = client._download("http://x", None)
+    path, info, error = client._download("http://x", str(work))
     assert path == real
     assert info["id"] == "vid1"
+    assert error is None
+
+
+def test_download_scan_never_looks_outside_its_work_dir(tmp_dirs, monkeypatch, tmp_path):
+    from src.config import Config
+    monkeypatch.setattr("src.services.ytdlp.yt_dlp.YoutubeDL", FakeYDL)
+    # another request's leftovers with the same id must not be picked up
+    Path(Config.DOWNLOAD_DIR, "vid1.f140.m4a").write_bytes(b"x")
+    work = tmp_path / "job"
+    work.mkdir()
+    client = YtDlpClient()
+    path, info, error = client._download("http://x", str(work))
+    assert path == str(work / "vid1.mp4")  # nothing matched, guessed name kept
+    assert error == "download produced no output file"
+
+
+def test_download_surfaces_the_failure_reason(tmp_dirs, monkeypatch, tmp_path):
+    monkeypatch.setattr("src.services.ytdlp.yt_dlp.YoutubeDL", FakeYDL)
+    path, info, error = YtDlpClient()._download("nope", str(tmp_path))
+    assert path is None and info is None
+    assert "Unsupported URL" in error

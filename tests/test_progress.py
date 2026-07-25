@@ -1,12 +1,8 @@
-from src.services.progress import UploadProgress, DownloadProgress, format_download_progress
+from fakes import FakeStatus
 
-
-class FakeStatus:
-    def __init__(self):
-        self.texts = []
-
-    async def set(self, text):
-        self.texts.append(text)
+from src.services.progress import (
+    UploadProgress, DownloadProgress, FileDownloadProgress, format_download_progress,
+)
 
 
 async def test_throttle_and_final(monkeypatch):
@@ -39,6 +35,20 @@ async def test_instances_are_independent(monkeypatch):
     clock["t"] = 510.0
     await a.update(1, 100)
     assert a._last == 510.0 and b._last == 0.0  # b unaffected
+
+
+async def test_upload_text_shares_the_download_block_format(monkeypatch):
+    clock = {"t": 0.0}
+    monkeypatch.setattr("src.services.progress.time.time", lambda: clock["t"])
+    status = FakeStatus()
+    up = UploadProgress(status)
+    clock["t"] = 10.0                    # 50 MB in 10s -> 5 MB/s, 10s left
+    await up.update(50 * 1024 * 1024, 100 * 1024 * 1024)
+    text = status.texts[0]
+    assert text.startswith("Uploading...\n\n[#####.....] 50.0%")
+    assert "Size: 50.0 / 100.0 MB" in text
+    assert "Speed: 5.00 MB/s" in text
+    assert "ETA: 10s" in text
 
 
 def test_format_download_progress():
@@ -75,3 +85,39 @@ def test_download_progress_hook_throttles(monkeypatch):
     dp.hook(d)                      # after 3s -> emits
     dp.hook({"status": "finished"})  # non-downloading -> ignored
     assert len(emitted) == 2
+
+
+def test_file_download_progress_shows_item_counter_and_bar(monkeypatch):
+    clock = {"t": 0.0}
+    monkeypatch.setattr("src.services.progress.time.time", lambda: clock["t"])
+    fp = FileDownloadProgress(status=None, loop=None, header="Downloading 2/5")
+    emitted = []
+    monkeypatch.setattr(fp, "_emit", emitted.append)
+
+    clock["t"] = 10.0                 # 50 MB in 10s -> 5 MB/s, 50 MB left -> 10s
+    fp(50 * 1024 * 1024, 100 * 1024 * 1024)
+    assert emitted[0].startswith("Downloading 2/5\n\n[#####.....] 50.0%")
+    assert "Speed: 5.00 MB/s" in emitted[0]
+    assert "ETA: 10s" in emitted[0]
+
+
+def test_file_download_progress_throttles_and_survives_unknown_total(monkeypatch):
+    clock = {"t": 0.0}
+    monkeypatch.setattr("src.services.progress.time.time", lambda: clock["t"])
+    fp = FileDownloadProgress(status=None, loop=None, header="Downloading 1/1")
+    emitted = []
+    monkeypatch.setattr(fp, "_emit", emitted.append)
+
+    clock["t"] = 10.0
+    fp(1024, 0)                       # no Content-Length -> indeterminate bar
+    clock["t"] = 11.0
+    fp(2048, 0)                       # within 3s -> throttled
+    clock["t"] = 14.0
+    fp(4096, 0)
+    assert len(emitted) == 2
+    assert "[..........]" in emitted[0]
+
+
+def test_file_download_progress_emit_never_raises_without_a_loop():
+    """The hook runs on a worker thread; a dead loop must not kill the download."""
+    FileDownloadProgress(status=None, loop=None, header="h")(1, 2)

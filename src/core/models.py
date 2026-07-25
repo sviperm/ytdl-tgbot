@@ -33,19 +33,13 @@ class PostMeta:
 
 @dataclass
 class Post:
-    """A fully-prepared post: metadata + downloaded local media items."""
+    """A fully-prepared post: metadata + downloaded local media items.
+
+    ``meta`` is the *final* metadata (``fetch`` refines what ``probe`` guessed), so
+    the orchestrator caches and the sender captions from here, not from the probe
+    result. Nothing about presentation lives on the post: how progress is reported
+    is the sender's decision, derived from the media itself.
+    """
 
     meta: PostMeta
     media: List[MediaItem] = field(default_factory=list)
-    use_upload_progress: bool = False       # yt-dlp True, Instagram False
-    upload_status_text: str = "Uploading..."
-
-    def all_paths(self):
-        """Every local path to clean up after sending (media + thumbnails)."""
-        paths = []
-        for item in self.media:
-            if item.path:
-                paths.append(item.path)
-            if item.thumb:
-                paths.append(item.thumb)
-        return paths

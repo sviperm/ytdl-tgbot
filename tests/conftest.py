@@ -12,14 +12,7 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-import os
-
 import pytest
-
-
-@pytest.fixture
-def fixtures_dir():
-    return os.path.join(os.path.dirname(__file__), "fixtures")
 
 
 @pytest.fixture
@@ -37,24 +30,3 @@ def tmp_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "COOKIES_FILE", str(data / "cookies.txt"))
     monkeypatch.setattr(Config, "DB_PATH", str(data / "bot_database.db"))
     return tmp_path
-
-
-class FakeMessage:
-    """Minimal stand-in for a pyrogram Message used as a status message."""
-
-    def __init__(self, text=""):
-        self.text = text
-        self.edits = []
-        self.deleted = False
-
-    async def edit_text(self, text, *args, **kwargs):
-        self.text = text
-        self.edits.append(text)
-
-    async def delete(self):
-        self.deleted = True
-
-
-@pytest.fixture
-def fake_message():
-    return FakeMessage()

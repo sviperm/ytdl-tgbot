@@ -8,16 +8,19 @@ from src.utils.urls import clean_url
 _MAX_BODY = 900
 
 
+def _source_link(url, text):
+    """Anchor back to the source, with tracking params stripped from the href."""
+    return f'<a href="{html.escape(clean_url(url), quote=True)}">{html.escape(text)}</a>'
+
+
 def build_caption(title, url):
     """Caption with the title as a clickable link back to the source video."""
-    safe_title = html.escape(title or "Video")
-    safe_url = html.escape(clean_url(url), quote=True)
-    return f'<a href="{safe_url}">{safe_title}</a>'
+    return _source_link(url, title or "Video")
 
 
 def build_ig_caption(caption_text, url):
     """Media-group caption: the post's text, then a source link below it."""
-    link = f'<a href="{html.escape(clean_url(url), quote=True)}">Instagram</a>'
+    link = _source_link(url, "Instagram")
     if not caption_text:
         return link
     body = caption_text[:_MAX_BODY].rstrip()

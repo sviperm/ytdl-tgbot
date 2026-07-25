@@ -7,9 +7,7 @@ from src.services.video import VideoProcessor
 
 
 @pytest.fixture
-def processor(monkeypatch):
-    # Skip loading the intro reference wav during construction.
-    monkeypatch.setattr(VideoProcessor, "_load_intro_ref", lambda self: None)
+def processor():
     return VideoProcessor()
 
 
@@ -42,7 +40,8 @@ def test_vp9_transcoded_to_h264(processor, monkeypatch, tmp_path):
     cmd = captured["cmd"]
     for token in ("libx264", "yuv420p", "aac", "+faststart"):
         assert token in cmd
-    assert "-ss" not in cmd  # intro trim disabled -> no seek
+    assert cmd[:4] == ["ffmpeg", "-y", "-i", str(src)]  # whole file, no seek
+    assert cmd[-1] == out  # output is the last argv token
     assert not os.path.exists(str(src))  # original removed
 
 

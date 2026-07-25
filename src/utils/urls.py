@@ -9,6 +9,11 @@ _TRACKING_PARAMS = {
 }
 
 
+def is_http_url(url):
+    """Guard before anything is handed to a platform: only http(s) links qualify."""
+    return isinstance(url, str) and url.startswith(("http://", "https://"))
+
+
 def clean_url(url):
     """Drop tracking query params (igsh, img_index, utm_*, ...) from a URL."""
     parts = urlsplit(url)

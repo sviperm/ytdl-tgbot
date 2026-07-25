@@ -1,4 +1,18 @@
-from src.utils.urls import clean_url
+from src.utils.urls import clean_url, is_http_url
+
+
+def test_is_http_url_accepts_http_and_https():
+    assert is_http_url("http://example.com")
+    assert is_http_url("https://example.com/p?a=1")
+
+
+def test_is_http_url_rejects_everything_else():
+    assert not is_http_url("")
+    assert not is_http_url(None)
+    assert not is_http_url("example.com")
+    assert not is_http_url("ftp://example.com")
+    assert not is_http_url("  https://example.com")  # leading space is not a URL
+    assert not is_http_url(b"https://example.com")
 
 
 def test_strips_instagram_tracking():

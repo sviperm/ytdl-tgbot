@@ -1,6 +1,8 @@
 import pytest
 
 from src.platforms.registry import PlatformRegistry
+from src.platforms.base import Platform
+from src.platforms.ytdlp_base import YtDlpPlatform
 from src.platforms.instagram import InstagramPlatform
 from src.platforms.pornhub import PornHubPlatform
 from src.platforms.youtube import YouTubePlatform
@@ -34,5 +36,19 @@ def test_resolve(registry, url, expected):
     assert isinstance(registry.resolve(url), expected)
 
 
-def test_no_match_for_non_http(registry):
-    assert registry.resolve("not a url") is None
+@pytest.mark.parametrize("url", ["not a url", "", None, "ftp://host/f.mp4", " https://youtu.be/x"])
+def test_no_match_for_non_http(registry, url):
+    assert registry.resolve(url) is None
+
+
+def test_generic_owns_the_catch_all_name_not_the_base():
+    """The shared base used to be named "generic" too, leaving GenericPlatform empty."""
+    assert GenericPlatform.name == "generic"
+    assert YtDlpPlatform.name not in ("generic", Platform.name)
+
+
+def test_every_platform_states_an_initial_status(registry):
+    # the ABC no longer supplies a default, so each platform must set its own
+    assert not hasattr(Platform, "initial_status")
+    for platform in registry._platforms:
+        assert platform.initial_status

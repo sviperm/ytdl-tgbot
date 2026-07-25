@@ -16,6 +16,7 @@ from src.platforms.youtube import YouTubePlatform
 from src.platforms.generic import GenericPlatform
 from src.bot.orchestrator import DownloadOrchestrator
 from src.storage.database import Database
+from src.config import Config
 
 
 class Container:
@@ -33,7 +34,10 @@ class Container:
             YouTubePlatform(ytdlp, video),                # youtube.com / youtu.be
             GenericPlatform(ytdlp, video),                # any other http(s) (last)
         ])
-        self.orchestrator = DownloadOrchestrator(self.registry, self.sender, self.db)
+        # One orchestrator, hence one download semaphore for the whole process.
+        self.orchestrator = DownloadOrchestrator(
+            self.registry, self.sender, self.db, Config.MAX_CONCURRENT_DOWNLOADS,
+        )
 
 
 container = Container()

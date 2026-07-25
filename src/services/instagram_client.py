@@ -12,11 +12,11 @@ without cookies or an account. Method chain (first with media wins):
 Returns {"shortcode", "caption", "media": [{"type": "video"|"image", "url"}]}.
 """
 
-import os
 import re
 import json
 import asyncio
 
+from src.config import Config
 from src.utils.logger import logger
 
 _IG_URL_RE = re.compile(r'https?://(?:www\.)?instagram\.com/', re.I)
@@ -32,13 +32,8 @@ _MOBILE_UA = ("Instagram 273.0.0.16.70 (iPhone15,2; iOS 17_5_1; en_US; en-US; "
 _BOT_UA = "TelegramBot (like TwitterBot)"
 _GQL_URL = "https://www.instagram.com/graphql/query/"
 
-# doc_ids and fixer hosts change over time; override via env without a code change.
-_GQL_MOBILE_DOC_ID = os.getenv("IG_MOBILE_DOC_ID", "8845758582119845")
-_GQL_WEB_DOC_ID = os.getenv("IG_WEB_DOC_ID", "25531498899829322")
-_FIXER_URL = os.getenv("IG_FIXER_URL", "https://www.instagram7.com").rstrip("/")
-# Fallback offload base; the real one is derived per-request from the fixer's
-# og:video (services move the offload host around). Defaults to the fixer host.
-_OFFLOAD_BASE = os.getenv("IG_OFFLOAD_BASE", f"{_FIXER_URL}/offload").rstrip("/")
+# doc_ids and fixer/offload hosts live in Config and are read per call, so a .env
+# change takes effect without a code change (and tests can monkeypatch Config).
 
 
 # --- pure helpers (no network) -----------------------------------------------
@@ -104,7 +99,7 @@ def fixer_meta(html, prop):
 
 
 def offload_url(shortcode, index, base=None):
-    return f"{base or _OFFLOAD_BASE}/{shortcode}/{index}"
+    return f"{base or Config.IG_OFFLOAD_BASE}/{shortcode}/{index}"
 
 
 def offload_base_from(og_video, shortcode):
@@ -149,7 +144,7 @@ class InstagramClient:
     def _fetch_via_gql_mobile(self, shortcode):
         data = {
             "variables": json.dumps({"shortcode": shortcode}),
-            "doc_id": _GQL_MOBILE_DOC_ID, "server_timestamps": "true",
+            "doc_id": Config.IG_MOBILE_DOC_ID, "server_timestamps": "true",
         }
         headers = {
             "User-Agent": _MOBILE_UA, "X-IG-App-ID": _APP_ID, "X-ASBD-ID": "129477",
@@ -168,7 +163,7 @@ class InstagramClient:
                 "shortcode": shortcode, "fetch_tagged_user_count": None,
                 "hoisted_comment_id": None, "hoisted_reply_id": None,
             }),
-            "server_timestamps": "true", "doc_id": _GQL_WEB_DOC_ID,
+            "server_timestamps": "true", "doc_id": Config.IG_WEB_DOC_ID,
         }
         headers = {
             "User-Agent": _UA, "X-IG-App-ID": _APP_ID, "X-ASBD-ID": "129477",
@@ -221,7 +216,8 @@ class InstagramClient:
     def _fixer_og_video(self, shortcode):
         """Prime the fixer (crawler UA) and return its og:video URL (or "")."""
         try:
-            r = self.http.get(f"{_FIXER_URL}/p/{shortcode}/", headers={"User-Agent": _BOT_UA}, timeout=20)
+            r = self.http.get(f"{Config.IG_FIXER_URL}/p/{shortcode}/",
+                              headers={"User-Agent": _BOT_UA}, timeout=20)
             if r.status_code == 200:
                 return fixer_meta(r.text, "og:video")
         except Exception as e:
@@ -230,7 +226,8 @@ class InstagramClient:
 
     def _fetch_via_fixer_single(self, shortcode):
         try:
-            r = self.http.get(f"{_FIXER_URL}/p/{shortcode}/", headers={"User-Agent": _BOT_UA}, timeout=20)
+            r = self.http.get(f"{Config.IG_FIXER_URL}/p/{shortcode}/",
+                              headers={"User-Agent": _BOT_UA}, timeout=20)
         except Exception as e:
             logger.warning(f"Instagram fixer single fetch failed for {shortcode}: {e}")
             return None
@@ -253,7 +250,7 @@ class InstagramClient:
             return self._fetch_via_fixer_single(shortcode)
         caption = _caption_of(sm)
         nodes = _nodes_of(sm)
-        offload_base = _OFFLOAD_BASE
+        offload_base = Config.IG_OFFLOAD_BASE
         if any(n.get("is_video") for n in nodes):
             # Prime the fixer and derive the current offload host from its og:video.
             base = offload_base_from(self._fixer_og_video(shortcode), shortcode)
@@ -277,7 +274,7 @@ class InstagramClient:
             logger.warning(f"Could not extract Instagram shortcode from {url}")
             return None
         methods = []
-        if self.http._proxies():
+        if self.http.has_proxy:
             methods += [
                 ("mobile GraphQL", self._fetch_via_gql_mobile),
                 ("web GraphQL", self._fetch_via_gql_web),
@@ -302,10 +299,11 @@ class InstagramClient:
     async def fetch(self, url):
         return await asyncio.to_thread(self._fetch, url)
 
-    def _download_file(self, url, dest):
+    def _download_file(self, url, dest, on_progress=None):
         # The offload host serves media only to crawler UAs (host-agnostic: match path).
         ua = _BOT_UA if "/offload/" in url else _UA
-        return self.http.download(url, dest, headers={"User-Agent": ua})
+        return self.http.download(url, dest, headers={"User-Agent": ua},
+                                  on_progress=on_progress)
 
-    async def download_file(self, url, dest):
-        return await asyncio.to_thread(self._download_file, url, dest)
+    async def download_file(self, url, dest, on_progress=None):
+        return await asyncio.to_thread(self._download_file, url, dest, on_progress)

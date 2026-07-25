@@ -55,3 +55,48 @@ def test_whitelist_parsing():
     assert _parse_whitelist("111, 222 ,333") == [111, 222, 333]
     assert _parse_whitelist("") == []
     assert _parse_whitelist("abc, 42, ") == [42]
+
+
+def test_parse_int():
+    from src.config import _parse_int
+
+    assert _parse_int("7") == 7
+    assert _parse_int(" 7 ") == 7
+    assert _parse_int("abc", 3) == 3
+    assert _parse_int(None, 3) == 3
+    assert _parse_int("") == 0
+
+
+def test_instagram_defaults(monkeypatch):
+    # Same isolated-exec trick as above: no env, so we see the baked-in defaults.
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+    for var in ("IG_PROXY_URL", "IG_FIXER_URL", "IG_OFFLOAD_BASE",
+                "IG_MOBILE_DOC_ID", "IG_WEB_DOC_ID", "LOG_LEVEL",
+                "MAX_CONCURRENT_DOWNLOADS"):
+        monkeypatch.delenv(var, raising=False)
+    source = open(os.path.join("src", "config.py")).read()
+    namespace = {}
+    exec(compile(source, "src/config.py", "exec"), namespace)
+    cfg = namespace["Config"]
+
+    assert cfg.IG_PROXY_URL == ""
+    assert cfg.IG_FIXER_URL == "https://www.instagram7.com"
+    assert cfg.IG_MOBILE_DOC_ID == "8845758582119845"
+    assert cfg.IG_WEB_DOC_ID == "25531498899829322"
+    assert cfg.LOG_LEVEL == "INFO"
+    assert cfg.MAX_CONCURRENT_DOWNLOADS == 2
+    # the offload base is derived from the fixer host, not hardcoded separately
+    assert cfg.IG_OFFLOAD_BASE == cfg.IG_FIXER_URL + "/offload"
+
+
+def test_fixer_url_trailing_slash_stripped_and_offload_follows(monkeypatch):
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setenv("IG_FIXER_URL", "https://other.example/")
+    monkeypatch.delenv("IG_OFFLOAD_BASE", raising=False)
+    source = open(os.path.join("src", "config.py")).read()
+    namespace = {}
+    exec(compile(source, "src/config.py", "exec"), namespace)
+    cfg = namespace["Config"]
+
+    assert cfg.IG_FIXER_URL == "https://other.example"
+    assert cfg.IG_OFFLOAD_BASE == "https://other.example/offload"

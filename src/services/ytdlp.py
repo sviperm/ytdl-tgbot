@@ -21,20 +21,35 @@ FORMAT = (
     'best[width<=?1920][height<=?1920]/best'
 )
 
+# yt-dlp error substrings that mean "login required" rather than "bad link".
+_AUTH_MARKERS = (
+    "empty media response", "login required", "requires authentication",
+    "cookies", "requested content is not available", "rate-limit",
+    "sign in", "private",
+)
+
+
+def is_auth_error(message):
+    """True when a yt-dlp failure reads like a login wall rather than a bad URL."""
+    lowered = (message or "").lower()
+    return any(marker in lowered for marker in _AUTH_MARKERS)
+
 
 class YtDlpClient:
-    """Runs blocking yt-dlp calls off the event loop; cookies are picked up live."""
+    """Runs blocking yt-dlp calls off the event loop; cookies are picked up live.
+
+    Stateless on purpose: one instance is shared by every platform and every
+    concurrent request, so a failure reason is returned to its own caller instead
+    of being parked on the client where a second request would read it.
+    """
 
     def __init__(self):
         if not shutil.which("ffmpeg"):
             logger.error("FFmpeg not found! High-quality downloads will fail. Please install ffmpeg.")
-        # Last extraction error, so callers can craft a useful reply.
-        self.last_extract_error = None
 
-    def _opts(self, extractor_args=None):
+    def _opts(self, extractor_args=None, out_dir=None):
         opts = {
             "format": FORMAT,
-            "outtmpl": os.path.join(Config.DOWNLOAD_DIR, "%(id)s.%(ext)s"),
             # Pick up data/cookies.txt live, so it can be added/refreshed without a restart.
             "cookiefile": self._cookiefile(),
             # Download DASH/HLS fragments in parallel — smoother, faster throughput
@@ -48,6 +63,9 @@ class YtDlpClient:
             "fragment_retries": 10,
             "continuedl": True,
         }
+        if out_dir:
+            # Extraction writes nothing, so only a download needs an output path.
+            opts["outtmpl"] = os.path.join(out_dir, "%(id)s.%(ext)s")
         if extractor_args:
             opts["extractor_args"] = extractor_args
         return opts
@@ -75,24 +93,28 @@ class YtDlpClient:
         return None
 
     async def extract_info(self, url, extractor_args=None):
+        """Return ``(info, error)``: exactly one of the two is set."""
         return await asyncio.to_thread(self._extract_info, url, extractor_args)
 
     def _extract_info(self, url, extractor_args):
-        self.last_extract_error = None
         with yt_dlp.YoutubeDL(self._opts(extractor_args)) as ydl:
             try:
                 logger.info(f"Extracting metadata for: {url}")
-                return ydl.extract_info(url, download=False)
+                return ydl.extract_info(url, download=False), None
             except Exception as e:
-                self.last_extract_error = str(e)
                 logger.error(f"Error during metadata extraction for {url}: {e}")
-                return None
+                return None, str(e)
 
-    async def download(self, url, extractor_args=None, progress_hook=None):
-        return await asyncio.to_thread(self._download, url, extractor_args, progress_hook)
+    async def download(self, url, out_dir, extractor_args=None, progress_hook=None):
+        """Download into ``out_dir``; returns ``(path, info, error)``."""
+        return await asyncio.to_thread(self._download, url, out_dir, extractor_args, progress_hook)
 
-    def _download(self, url, extractor_args, progress_hook=None):
-        opts = self._opts(extractor_args)
+    def _download(self, url, out_dir, extractor_args=None, progress_hook=None):
+        # Costs a second extraction (network + PO token + latency) on top of the
+        # one probe() already did. process_ie_result() would reuse the first
+        # result, but it can't be verified without live YouTube, so the duplicate
+        # request stays a conscious trade-off.
+        opts = self._opts(extractor_args, out_dir)
         if progress_hook:
             opts["progress_hooks"] = [progress_hook]
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -101,17 +123,20 @@ class YtDlpClient:
                 info = ydl.extract_info(url, download=True)
                 filename = ydl.prepare_filename(info)
                 # A merged file's extension may differ from prepare_filename's guess.
+                # The scan is safe only because out_dir belongs to this request —
+                # in a shared directory it would happily match another download's
+                # fragments or thumbnail.
                 if not os.path.exists(filename):
                     base = os.path.splitext(filename)[0]
-                    for f in os.listdir(Config.DOWNLOAD_DIR):
+                    for f in os.listdir(out_dir):
                         if f.startswith(os.path.basename(base)):
-                            filename = os.path.join(Config.DOWNLOAD_DIR, f)
+                            filename = os.path.join(out_dir, f)
                             break
                 if os.path.exists(filename):
                     logger.info(f"File downloaded successfully to: {filename}")
-                else:
-                    logger.error(f"Download reported success but file not found: {filename}")
-                return filename, info
+                    return filename, info, None
+                logger.error(f"Download reported success but file not found: {filename}")
+                return filename, info, "download produced no output file"
             except Exception as e:
                 logger.error(f"Error during download for {url}: {e}")
-                return None, None
+                return None, None, str(e)

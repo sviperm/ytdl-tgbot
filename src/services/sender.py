@@ -31,12 +31,16 @@ class TelegramSender:
             return SendResult()
 
         if len(media) == 1:
+            await status.set("Uploading to Telegram...")
             return await self._send_single(client, chat_id, media[0], caption, post, status)
+        # Pyrogram 2.0.106's send_media_group takes no progress callback, so a group
+        # upload can only announce that it started.
+        await status.set(f"Uploading {len(media)} items to Telegram...")
         return await self._send_group(client, chat_id, media, caption)
 
     async def _send_single(self, client, chat_id, item, caption, post, status):
         if item.kind == "video":
-            progress = UploadProgress(status).update if post.use_upload_progress else None
+            progress = UploadProgress(status).update
             sent = await client.send_video(
                 chat_id=chat_id, video=item.path, caption=caption, parse_mode=ParseMode.HTML,
                 thumb=item.thumb, duration=post.meta.duration,
@@ -51,20 +55,21 @@ class TelegramSender:
 
     async def _send_group(self, client, chat_id, media, caption):
         group = []
-        for item in media:
+        for index, item in enumerate(media):
+            # Telegram shows the album caption from its first item, so only that
+            # one carries it.
+            text = caption if index == 0 else ""
             if item.kind == "video":
-                group.append(InputMediaVideo(item.path, thumb=item.thumb, supports_streaming=True))
+                group.append(InputMediaVideo(
+                    item.path, thumb=item.thumb, caption=text,
+                    parse_mode=ParseMode.HTML, supports_streaming=True,
+                ))
             else:
-                group.append(InputMediaPhoto(item.path))
-        # Caption goes on the first item of the first chunk only.
-        first = True
+                group.append(InputMediaPhoto(item.path, caption=text, parse_mode=ParseMode.HTML))
         for start in range(0, len(group), _MEDIA_GROUP_LIMIT):
-            chunk = group[start:start + _MEDIA_GROUP_LIMIT]
-            if first:
-                chunk[0].caption = caption
-                chunk[0].parse_mode = ParseMode.HTML
-                first = False
-            await client.send_media_group(chat_id=chat_id, media=chunk)
+            await client.send_media_group(
+                chat_id=chat_id, media=group[start:start + _MEDIA_GROUP_LIMIT],
+            )
         return SendResult()
 
     @staticmethod

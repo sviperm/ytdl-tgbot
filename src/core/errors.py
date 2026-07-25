@@ -20,11 +20,12 @@ class ExtractError(PlatformError):
 
 
 class AuthRequiredError(PlatformError):
-    """The post is login-gated (Instagram etc.)."""
+    """yt-dlp refused the URL because the site wants a logged-in session."""
 
     def __init__(self, message="authentication required",
-                 user_message=("🔒 This post requires login (e.g. Instagram now needs it) "
-                               "and can't be downloaded without an authenticated cookies file.")):
+                 user_message=("🔒 This video is age-gated, private or otherwise login-only, "
+                               "so it can't be downloaded without a cookies file "
+                               "(data/cookies.txt).")):
         super().__init__(message, user_message)
 
 

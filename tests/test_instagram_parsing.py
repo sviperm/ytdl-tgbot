@@ -2,11 +2,23 @@ import json
 
 import pytest
 
+from src.config import Config
 from src.services import instagram_client as ig
+from src.services.http import HttpClient
 from src.services.instagram_client import (
     InstagramClient, is_instagram_url, extract_shortcode, shortcode_to_pk,
     parse_gql_media, fixer_meta, offload_url, offload_base_from,
 )
+
+FIXER = "https://fixer.example"
+OFFLOAD = FIXER + "/offload"
+
+
+@pytest.fixture(autouse=True)
+def ig_hosts(monkeypatch):
+    """Pin the fixer/offload hosts so tests don't depend on the developer's .env."""
+    monkeypatch.setattr(Config, "IG_FIXER_URL", FIXER)
+    monkeypatch.setattr(Config, "IG_OFFLOAD_BASE", OFFLOAD)
 
 
 class FakeResponse:
@@ -32,8 +44,9 @@ class FakeHttp:
         self._proxy = proxy
         self.calls = []
 
-    def _proxies(self):
-        return {"http": self._proxy, "https": self._proxy} if self._proxy else None
+    @property
+    def has_proxy(self):
+        return bool(self._proxy)
 
     def _match(self, url):
         for key, resp in self.responses.items():
@@ -46,12 +59,14 @@ class FakeHttp:
         return self._match(url)
 
     def post(self, url, data=None, headers=None, timeout=25):
-        self.calls.append(("post", url, headers))
+        self.calls.append(("post", url, headers, data))
         return self._match(url)
 
-    def download(self, url, dest, headers=None, timeout=120):
+    def download(self, url, dest, headers=None, timeout=120, on_progress=None):
         self.calls.append(("download", url, headers))
         open(dest, "wb").write(b"data")
+        if on_progress:
+            on_progress(4, 4)
         return dest
 
 
@@ -119,6 +134,22 @@ def test_fixer_meta_and_offload_url():
     assert offload_url("ABC", 3, "https://h/offload") == "https://h/offload/ABC/3"
 
 
+def test_offload_url_falls_back_to_config(monkeypatch):
+    monkeypatch.setattr(Config, "IG_OFFLOAD_BASE", "https://cfg.example/offload")
+    assert offload_url("ABC", 1) == "https://cfg.example/offload/ABC/1"
+
+
+def test_doc_ids_read_from_config_at_call_time(monkeypatch):
+    monkeypatch.setattr(Config, "IG_MOBILE_DOC_ID", "111")
+    monkeypatch.setattr(Config, "IG_WEB_DOC_ID", "222")
+    http = FakeHttp({"graphql": FakeResponse(500, "")})
+    client = InstagramClient(http)
+    client._fetch_via_gql_mobile("CODE")
+    client._fetch_via_gql_web("CODE")
+    doc_ids = [c[3]["doc_id"] for c in http.calls if c[0] == "post"]
+    assert doc_ids == ["111", "222"]
+
+
 # --- client methods with fake http ------------------------------------------
 
 def test_embed_shortcode_media_round_trip():
@@ -158,7 +189,7 @@ def test_fetch_via_fixer_derives_offload_host_from_og_video():
     fixer_html = '<meta property="og:video" content="https://newhost.example/offload/CODE/1">'
     http = FakeHttp({
         "instagram.com/p/CODE/embed/captioned": FakeResponse(200, make_embed_html(sm)),
-        "instagram7.com/p/CODE": FakeResponse(200, fixer_html),
+        "fixer.example/p/CODE": FakeResponse(200, fixer_html),
     })
     client = InstagramClient(http)
     out = client._fetch_via_fixer("CODE")
@@ -206,3 +237,104 @@ def test_download_file_uses_crawler_ua_for_offload(tmp_path):
     cdn_headers = http.calls[1][2]
     assert offload_headers["User-Agent"] == ig._BOT_UA
     assert cdn_headers["User-Agent"] == ig._UA
+
+
+def test_download_file_forwards_progress(tmp_path):
+    http = FakeHttp()
+    client = InstagramClient(http)
+    seen = []
+    client._download_file("https://cdn/i.jpg", str(tmp_path / "i.jpg"),
+                          on_progress=lambda done, total: seen.append((done, total)))
+    assert seen == [(4, 4)]
+
+
+# --- HttpClient (curl_cffi layer faked; no network) --------------------------
+
+class FakeStreamResponse:
+    def __init__(self, chunks, total=None, status_code=200):
+        self._chunks = chunks
+        self.status_code = status_code
+        self.headers = {} if total is None else {"Content-Length": str(total)}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise Exception(f"http {self.status_code}")
+
+    def iter_content(self):
+        yield from self._chunks
+
+
+class FakeSession:
+    """Stands in for curl_cffi.requests.Session (a context manager)."""
+
+    def __init__(self, response, record):
+        self._response = response
+        self._record = record
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get(self, url, **kwargs):
+        self._record.append((url, kwargs))
+        if isinstance(self._response, Exception):
+            raise self._response
+        return self._response
+
+
+def _patch_session(monkeypatch, response):
+    record = []
+    monkeypatch.setattr(
+        "src.services.http.cffi_requests.Session",
+        lambda *a, **k: FakeSession(response, record),
+    )
+    return record
+
+
+def test_http_download_streams_and_reports_progress(tmp_path, monkeypatch):
+    chunks = [b"a" * 10, b"b" * 5, b"c" * 3]
+    record = _patch_session(monkeypatch, FakeStreamResponse(chunks, total=18))
+    dest = str(tmp_path / "v.mp4")
+    seen = []
+
+    out = HttpClient(proxy="").download(dest=dest, url="https://h/v.mp4",
+                                        on_progress=lambda d, t: seen.append((d, t)))
+
+    assert out == dest
+    assert open(dest, "rb").read() == b"".join(chunks)
+    assert seen == [(10, 18), (15, 18), (18, 18)]
+    # streaming must be requested, otherwise curl_cffi buffers the whole body
+    assert record[0][1]["stream"] is True
+
+
+def test_http_download_unknown_total_reports_zero(tmp_path, monkeypatch):
+    _patch_session(monkeypatch, FakeStreamResponse([b"xy"]))
+    seen = []
+    HttpClient(proxy="").download("https://h/v.mp4", str(tmp_path / "v.mp4"),
+                                  on_progress=lambda d, t: seen.append((d, t)))
+    assert seen == [(2, 0)]
+
+
+def test_http_download_removes_partial_file_on_error(tmp_path, monkeypatch):
+    def boom():
+        yield b"partial"
+        raise IOError("connection reset")
+
+    _patch_session(monkeypatch, FakeStreamResponse(boom()))
+    dest = tmp_path / "v.mp4"
+    with pytest.raises(IOError):
+        HttpClient(proxy="").download("https://h/v.mp4", str(dest))
+    # a truncated file must not survive; it would look like a finished download
+    assert not dest.exists()
+
+
+def test_http_client_takes_proxy_from_config(monkeypatch):
+    monkeypatch.setattr(Config, "IG_PROXY_URL", "http://proxy:8080")
+    # src.container builds HttpClient() with no arguments
+    assert HttpClient().has_proxy
+    assert HttpClient(proxy="").has_proxy is False
+
+    monkeypatch.setattr(Config, "IG_PROXY_URL", "")
+    assert HttpClient().has_proxy is False

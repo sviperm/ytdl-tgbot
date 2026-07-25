@@ -7,5 +7,4 @@ TgCrypto==1.2.5
 yt-dlp
 yt-dlp-ejs
 curl_cffi
-numpy
 bgutil-ytdlp-pot-provider

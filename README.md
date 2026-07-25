@@ -77,6 +77,51 @@ The bot can be restricted using the `WHITE_LIST_IDS` variable in the `.env` file
 - `WHITE_LIST_IDS="12345678,87654321"` - Only these users can use the bot.
 - `WHITE_LIST_IDS=""` - Everyone can use the bot.
 
+## Testing
+
+The suite runs in three tiers. Each higher tier is opt-in twice over — a marker
+*and* an environment variable — so a plain `pytest` never touches the network.
+
+1. **Offline (default)**: no credentials, no network, no `.env` needed.
+   ```bash
+   pytest -q
+   ```
+   Everything external is faked. The live tests report as skipped.
+
+2. **Live (opt-in)**: probes the real services with the table of real links in
+   `tests/test_live_urls.py` — one row per service and per format (horizontal
+   video and vertical shorts/reels).
+   ```bash
+   RUN_NETWORK_TESTS=1 ./venv/bin/pytest -q -m network
+   ```
+   Metadata only, never a full download, so it finishes in seconds. It needs:
+   - the PO-token provider for YouTube: `docker compose up -d pot-provider`
+   - [Deno](https://deno.com/) on `PATH` (YouTube's JS challenge)
+   - an IP Instagram does not block, or `IG_PROXY_URL` in `.env`
+
+   Anything missing from the environment is skipped with the reason, not failed.
+
+3. **Real uploads (opt-in)**: sends actual media to a **dev** bot, which is the
+   only way to prove Telegram accepts what the bot produces — that the caption
+   HTML parses, that a vertical video stays vertical, that a cached `file_id`
+   resends, that an album chunks at 10.
+   ```bash
+   RUN_TELEGRAM_TESTS=1 ./venv/bin/pytest -q -m telegram
+   ```
+   Add to `.env` (never the production bot — these post real messages):
+   ```
+   TG_TEST_BOT_TOKEN="<a second bot from @BotFather>"
+   TG_TEST_CHAT_ID="<your user id>"
+   ```
+   Press **Start** on the dev bot first: a bot cannot open a conversation, so
+   without it every send fails with `PEER_ID_INVALID`. `ffmpeg` generates the test
+   media at run time, so no fixtures are committed. Messages are left in the chat
+   so you can look at them; `TG_TEST_CLEANUP=1` deletes them instead.
+
+Live links rot. When one dies, replace it in the table in
+`tests/test_live_urls.py` — that is the only place they are listed, and adding a
+new platform without a link there fails the suite.
+
 ## Project Structure
 
 ```text
