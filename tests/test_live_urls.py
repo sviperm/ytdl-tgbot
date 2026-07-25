@@ -1,35 +1,26 @@
-"""The table of real links, one row per service and per format.
+"""Routing and live-service checks over the shared table of real links.
 
-Every other test in this suite runs against fakes, so nothing checks that the
-real services still answer the way the code expects. This file holds the links —
-horizontal video *and* vertical shorts/reels for each service — and uses them at
-two levels:
+The table itself lives in ``live_links.py`` so the send tier can use the same rows.
 
 Tier 1 (default ``pytest``): offline, credential-free. Routing, ``clean_url``,
 PornHub normalization and Instagram shortcode extraction are all pure functions,
 so the links are exercised as data without a single request.
 
 Tier 2 (``RUN_NETWORK_TESTS=1 pytest -m network``): probes the live services for
-metadata only — never a full download, so the opt-in run stays minutes, not hours.
+metadata only — never a full download, so the opt-in run stays seconds, not hours.
 Its job is to catch what mocks cannot: a service changing shape, or a yt-dlp
 format-selector regression that silently drops a vertical video to a squashed
 stream (hence the per-format links and the orientation assertion).
-
-Adding a service means adding a row, not a test. Live links rot: when one dies,
-replace it here.
 """
 
 import os
-from dataclasses import dataclass
 from functools import lru_cache
 
 import pytest
 
 from live_env import skip_unless_youtube_env_ready, tcp_reachable
+from live_links import INSTAGRAM, TRACKED, URLS, YTDLP_PROBES, ids
 from src.config import Config
-from src.platforms.generic import GenericPlatform
-from src.platforms.instagram import InstagramPlatform
-from src.platforms.pornhub import PornHubPlatform
 from src.platforms.youtube import YouTubePlatform
 from src.services.http import HttpClient
 from src.services.instagram_client import InstagramClient, extract_shortcode
@@ -42,148 +33,6 @@ opt_in = pytest.mark.skipif(
     os.getenv("RUN_NETWORK_TESTS") != "1",
     reason="live network test: set RUN_NETWORK_TESTS=1 to run it",
 )
-
-
-@dataclass(frozen=True)
-class Link:
-    """One real link plus what it is expected to prove.
-
-    ``orientation`` is asserted only for yt-dlp rows, where ``probe`` reports the
-    dimensions of the format the selector picked. Instagram never reports them
-    (probe is pure and no media is downloaded), so there it is documentation only.
-    """
-
-    name: str            # parametrize id
-    url: str
-    platform: type       # class the production registry must resolve this to
-    orientation: str     # "landscape" | "portrait" | "photo" (nothing to orient)
-    live_probe: bool = True    # tier 2: await platform.probe(url)
-    tracking_url: str = None   # same link as a user actually shares it (?si=/?igsh=)
-    normalized: str = None     # what normalize_url must rewrite the URL to
-    shortcode: str = None      # Instagram only: expected extract_shortcode result
-    media_types: tuple = ()    # Instagram only: exact media kinds fetch() must return
-
-
-URLS = [
-    # --- YouTube -------------------------------------------------------------
-    # Blender Foundation upload, permanent by construction; the source is 4K, so a
-    # 1920x1080 probe also proves the format selector's 1080p cap still bites.
-    Link(
-        name="youtube-landscape-4k-source",
-        url="https://youtu.be/aqz-KE-bpKQ",
-        platform=YouTubePlatform,
-        orientation="landscape",
-        tracking_url="https://youtu.be/aqz-KE-bpKQ?si=lIrGXWyKMLmMbtGz",
-    ),
-    # The link the author used while building the bot: a plain 1080p upload, i.e.
-    # the ordinary case where no cap or transcode is involved.
-    Link(
-        name="youtube-landscape-plain-1080p",
-        url="https://youtu.be/IdyXKJ8NcNI",
-        platform=YouTubePlatform,
-        orientation="landscape",
-    ),
-    # /shorts/ URLs are a different path through the extractor and the only YouTube
-    # format that must come back taller than it is wide.
-    Link(
-        name="youtube-shorts-portrait",
-        url="https://youtube.com/shorts/L6SiEKv7ziE",
-        platform=YouTubePlatform,
-        orientation="portrait",
-    ),
-
-    # --- PornHub -------------------------------------------------------------
-    # Top-rated all-time upload, picked for longevity over anything topical.
-    Link(
-        name="pornhub-landscape",
-        url="https://www.pornhub.com/view_video.php?viewkey=ph5e7218510fcd8",
-        platform=PornHubPlatform,
-        orientation="landscape",
-    ),
-    # A "shorties" link is the vertical format *and* the only URL shape that needs
-    # normalize_url — without the rewrite yt-dlp returns an empty playlist.
-    Link(
-        name="pornhub-shorties-portrait",
-        url="https://www.pornhub.com/shorties/6a25b51e258a7",
-        platform=PornHubPlatform,
-        orientation="portrait",
-        normalized="https://www.pornhub.com/view_video.php?viewkey=6a25b51e258a7",
-    ),
-
-    # --- Instagram -----------------------------------------------------------
-    # A reel: the single-video case, sent as one item.
-    Link(
-        name="instagram-reel-portrait",
-        url="https://www.instagram.com/reel/DZ9sTMZMX7I/",
-        platform=InstagramPlatform,
-        orientation="portrait",
-        live_probe=False,  # probe() is pure for Instagram; fetch() is the live check
-        tracking_url="https://www.instagram.com/reel/DZ9sTMZMX7I/?igsh=MXBjbHZ2ZW1sMHl4dw==",
-        shortcode="DZ9sTMZMX7I",
-        media_types=("video",),
-    ),
-    # A mixed carousel: the sidecar structure the fixer has to reconstruct, and the
-    # reason posts are sent as a media group. Post contents are immutable, so the
-    # exact item list is a fair invariant — a shrunk list means the parse degraded.
-    Link(
-        name="instagram-carousel-mixed",
-        url="https://www.instagram.com/p/DFYwLR5xReU/",
-        platform=InstagramPlatform,
-        orientation="portrait",
-        live_probe=False,
-        shortcode="DFYwLR5xReU",
-        media_types=("video", "image", "image", "image"),
-    ),
-    # A single photo post: the image-only branch, which must not be mistaken for a
-    # failed video fetch.
-    Link(
-        name="instagram-single-photo",
-        url="https://www.instagram.com/p/DFlc5rYy1XW/",
-        platform=InstagramPlatform,
-        orientation="photo",
-        live_probe=False,
-        shortcode="DFlc5rYy1XW",
-        media_types=("image",),
-    ),
-
-    # --- Generic (yt-dlp catch-all) -----------------------------------------
-    # VK, one of the sites the README advertises; also yt-dlp's own extractor test
-    # link, so it is maintained upstream rather than by us.
-    Link(
-        name="generic-vk-landscape",
-        url="https://vk.com/video205387401_165548505",
-        platform=GenericPlatform,
-        orientation="landscape",
-    ),
-    # VK clips are the vertical format on that site — the catch-all has to keep the
-    # portrait aspect too, not just the named platforms.
-    Link(
-        name="generic-vk-clip-portrait",
-        url="https://vk.com/clip30014565_456240946",
-        platform=GenericPlatform,
-        orientation="portrait",
-    ),
-    # Vimeo, also advertised in the README. Routing is checked, the live probe is
-    # not: yt-dlp's Vimeo extractor now demands an OAuth token it cannot get
-    # anonymously ("Failed to fetch macos OAuth token: 401"), so a live probe here
-    # would be a permanent red that says nothing about this repo. Flip live_probe
-    # back on once anonymous Vimeo extraction works again.
-    Link(
-        name="generic-vimeo-landscape",
-        url="https://vimeo.com/76979871",
-        platform=GenericPlatform,
-        orientation="landscape",
-        live_probe=False,
-    ),
-]
-
-YTDLP_PROBES = [e for e in URLS if e.live_probe]
-INSTAGRAM = [e for e in URLS if e.platform is InstagramPlatform]
-TRACKED = [e for e in URLS if e.tracking_url]
-
-
-def ids(entries):
-    return [e.name for e in entries]
 
 
 @lru_cache(maxsize=1)

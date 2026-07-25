@@ -124,3 +124,52 @@ def test_download_surfaces_the_failure_reason(tmp_dirs, monkeypatch, tmp_path):
     path, info, error = YtDlpClient()._download("nope", str(tmp_path))
     assert path is None and info is None
     assert "Unsupported URL" in error
+
+
+def test_download_retries_once_on_a_stale_media_url(tmp_dirs, monkeypatch):
+    """A 403 means the signed URL went stale, so a fresh extraction must be tried."""
+    from src.config import Config
+    client = YtDlpClient()
+    calls = []
+
+    def fake_once(url, out_dir, extractor_args=None, progress_hook=None):
+        calls.append(url)
+        if len(calls) == 1:
+            return None, None, "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+        return os.path.join(out_dir, "vid1.mp4"), {"id": "vid1"}, None
+
+    monkeypatch.setattr(client, "_download_once", fake_once)
+    path, info, error = client._download("http://x", Config.DOWNLOAD_DIR)
+    assert len(calls) == 2, "a 403 must trigger exactly one retry"
+    assert path.endswith("vid1.mp4") and error is None
+
+
+def test_download_does_not_retry_a_real_failure(tmp_dirs, monkeypatch):
+    from src.config import Config
+    client = YtDlpClient()
+    calls = []
+
+    def fake_once(url, out_dir, extractor_args=None, progress_hook=None):
+        calls.append(url)
+        return None, None, "ERROR: Video unavailable"
+
+    monkeypatch.setattr(client, "_download_once", fake_once)
+    path, _, error = client._download("http://x", Config.DOWNLOAD_DIR)
+    # Retrying a genuinely dead video just doubles the wait before the user hears back.
+    assert len(calls) == 1
+    assert path is None and "unavailable" in error
+
+
+def test_download_gives_up_after_the_retry(tmp_dirs, monkeypatch):
+    from src.config import Config
+    client = YtDlpClient()
+    calls = []
+
+    def fake_once(url, out_dir, extractor_args=None, progress_hook=None):
+        calls.append(url)
+        return None, None, "HTTP Error 403: Forbidden"
+
+    monkeypatch.setattr(client, "_download_once", fake_once)
+    path, _, error = client._download("http://x", Config.DOWNLOAD_DIR)
+    assert len(calls) == 2, "one retry, not an endless loop"
+    assert path is None and "403" in error

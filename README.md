@@ -104,7 +104,9 @@ The suite runs in three tiers. Each higher tier is opt-in twice over — a marke
 3. **Real uploads (opt-in)**: sends actual media to a **dev** bot, which is the
    only way to prove Telegram accepts what the bot produces — that the caption
    HTML parses, that a vertical video stays vertical, that a cached `file_id`
-   resends, that an album chunks at 10.
+   resends, that an album chunks at 10. It also runs the **whole pipeline per
+   service** — YouTube (landscape + Shorts), PornHub shorties, VK (video + clip),
+   Instagram (reel, carousel, photo) — from link to delivered message.
    ```bash
    RUN_TELEGRAM_TESTS=1 ./venv/bin/pytest -q -m telegram
    ```
@@ -118,9 +120,9 @@ The suite runs in three tiers. Each higher tier is opt-in twice over — a marke
    media at run time, so no fixtures are committed. Messages are left in the chat
    so you can look at them; `TG_TEST_CLEANUP=1` deletes them instead.
 
-Live links rot. When one dies, replace it in the table in
-`tests/test_live_urls.py` — that is the only place they are listed, and adding a
-new platform without a link there fails the suite.
+Live links rot. When one dies, replace it in the table in `tests/live_links.py` —
+all three tiers read that one table, and adding a new platform without a row there
+fails the suite.
 
 ## Project Structure
 

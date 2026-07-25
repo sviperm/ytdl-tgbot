@@ -35,6 +35,10 @@ class InstagramPlatform(Platform):
         items = post["media"]
         loop = asyncio.get_running_loop()
         media = []
+        # Instagram's fetch chain reports no dimensions or duration, and a video
+        # sent as 0x0 renders as a squashed strip. They are probed off the file
+        # instead; only a single-item post uses them, so the first video wins.
+        width = height = duration = 0
         for i, item in enumerate(items):
             ext = ".mp4" if item["type"] == "video" else ".jpg"
             dest = os.path.join(work_dir, f"{shortcode}_{i}{ext}")
@@ -52,6 +56,9 @@ class InstagramPlatform(Platform):
                 await status.set(f"Processing {i + 1}/{len(items)}...")
                 dest = await self.video.process(dest)  # H.264 for iOS + faststart
                 thumb = await self.video.make_thumbnail(dest)
+                if not width:
+                    width, height = await self.video.probe_dimensions(dest)
+                    duration = await self.video.probe_duration(dest)
                 media.append(MediaItem("video", dest, thumb))
             else:
                 media.append(MediaItem("image", dest))
@@ -64,6 +71,9 @@ class InstagramPlatform(Platform):
                 video_id=shortcode,
                 title=shortcode,
                 caption_html=build_ig_caption(post.get("caption") or "", url),
+                width=width,
+                height=height,
+                duration=duration,
             ),
             media=media,
         )

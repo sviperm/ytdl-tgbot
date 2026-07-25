@@ -35,6 +35,15 @@ def is_auth_error(message):
     return any(marker in lowered for marker in _AUTH_MARKERS)
 
 
+# Failures that mean "the signed media URL went stale", not "this video is broken".
+_STALE_URL_MARKERS = ("http error 403", "forbidden", "unable to download video data")
+
+
+def _is_retryable_download_error(message):
+    lowered = (message or "").lower()
+    return any(marker in lowered for marker in _STALE_URL_MARKERS)
+
+
 class YtDlpClient:
     """Runs blocking yt-dlp calls off the event loop; cookies are picked up live.
 
@@ -110,6 +119,26 @@ class YtDlpClient:
         return await asyncio.to_thread(self._download, url, out_dir, extractor_args, progress_hook)
 
     def _download(self, url, out_dir, extractor_args=None, progress_hook=None):
+        """Download, retrying once on an expired/rejected media URL.
+
+        YouTube hands out signed media URLs and answers 403 when one is used a
+        moment too late or under bursty access. yt-dlp's own ``retries`` re-requests
+        the *same* URL, which stays 403 — only extracting again yields freshly
+        signed ones, so a second attempt with a new YoutubeDL is what recovers.
+        """
+        last_error = None
+        for attempt in (1, 2):
+            path, info, error = self._download_once(url, out_dir, extractor_args, progress_hook)
+            if path:
+                return path, info, error
+            last_error = error
+            if not _is_retryable_download_error(error):
+                break
+            if attempt == 1:
+                logger.warning(f"Retrying {url} with a fresh extraction after: {error}")
+        return None, None, last_error
+
+    def _download_once(self, url, out_dir, extractor_args=None, progress_hook=None):
         # Costs a second extraction (network + PO token + latency) on top of the
         # one probe() already did. process_ie_result() would reuse the first
         # result, but it can't be verified without live YouTube, so the duplicate

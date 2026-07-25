@@ -23,6 +23,9 @@ class VideoProcessor:
     async def probe_duration(self, video_path):
         return await asyncio.to_thread(self._probe_duration, video_path)
 
+    async def probe_dimensions(self, video_path):
+        return await asyncio.to_thread(self._probe_dimensions, video_path)
+
     # --- transcode -----------------------------------------------------------
 
     def _process(self, video_path):
@@ -97,6 +100,29 @@ class VideoProcessor:
         except Exception as e:
             logger.warning(f"ffprobe failed for {video_path}: {e}")
             return ""
+
+    def _probe_dimensions(self, video_path):
+        """(width, height) of the first video stream, (0, 0) if ffprobe can't say.
+
+        Telegram lays the player out from these: sent as 0 it renders a vertical
+        reel as a squashed strip. Needed wherever the metadata didn't come from
+        yt-dlp — Instagram, whose fetch chain reports no dimensions at all.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=width,height",
+                    "-of", "csv=p=0:s=x", video_path,
+                ],
+                check=True, capture_output=True, text=True,
+            )
+            first = (result.stdout.strip().splitlines() or [""])[0]
+            width, _, height = first.partition("x")
+            return int(width), int(height)
+        except Exception as e:
+            logger.warning(f"ffprobe dimensions failed for {video_path}: {e}")
+            return 0, 0
 
     def _probe_duration(self, video_path):
         try:

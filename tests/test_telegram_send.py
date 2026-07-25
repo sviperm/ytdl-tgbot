@@ -25,6 +25,7 @@ import os
 import subprocess
 from types import SimpleNamespace
 
+import aiosqlite
 import pytest
 import pytest_asyncio
 from pyrogram.client import Client
@@ -32,15 +33,14 @@ from pyrogram.enums import MessageEntityType
 from pyrogram.errors import FloodWait
 
 import live_env
+import live_links
 from src.bot.orchestrator import DownloadOrchestrator
 from src.config import Config
 from src.core.models import MediaItem, Post, PostMeta
-from src.platforms.generic import GenericPlatform
-from src.platforms.registry import PlatformRegistry
+from src.platforms.instagram import InstagramPlatform
 from src.platforms.youtube import YouTubePlatform
 from src.services.sender import TelegramSender
 from src.services.video import VideoProcessor
-from src.services.ytdlp import YtDlpClient
 from src.storage.database import Database
 from src.utils.captions import build_caption
 from src.utils.urls import clean_url
@@ -58,10 +58,6 @@ pytestmark = [
 _TOKEN = os.getenv("TG_TEST_BOT_TOKEN", "")
 _CHAT_ID = os.getenv("TG_TEST_CHAT_ID", "")
 
-# A YouTube Short: the shortest real end-to-end case, and vertical, so the whole
-# pipeline is checked against the format users complain about most.
-_E2E_URL = "https://youtube.com/shorts/L6SiEKv7ziE"
-_E2E_VIDEO_ID = "L6SiEKv7ziE"
 
 
 # --- media fixtures ----------------------------------------------------------
@@ -109,11 +105,15 @@ class RecordingClient:
         self.videos = []
         self.photos = []
         self.groups = []
+        # A fresh upload passes a local path; a cached resend passes a file_id
+        # string. Keeping the kwargs is the only way to tell those apart.
+        self.video_kwargs = []
 
     def __getattr__(self, name):
         return getattr(self._client, name)
 
     async def send_video(self, **kwargs):
+        self.video_kwargs.append(kwargs)
         message = await self._client.send_video(**kwargs)
         self.videos.append(message)
         return message
@@ -376,37 +376,123 @@ async def test_album_beyond_ten_items_is_chunked(client, chat_id, tmp_path):
 
 # --- the whole pipeline ------------------------------------------------------
 
-@pytest.mark.network
-async def test_orchestrator_end_to_end(client, chat_id, bot, tmp_path, monkeypatch):
-    """A real link in, a real vertical video out, a real cache row written.
+async def _cache_rows(db):
+    """Every (platform, video_id) the run cached; Database exposes no listing."""
+    async with aiosqlite.connect(db.db_path) as conn:
+        async with conn.execute("SELECT platform, video_id FROM videos") as cursor:
+            return await cursor.fetchall()
 
-    Every other test here hands the sender a file that was never downloaded. This
-    one runs what a user actually triggers: probe, download, transcode, upload,
-    cache, cleanup.
+
+def _entry(name):
+    """One row from the shared link table, by name."""
+    return next(e for e in live_links.URLS if e.name == name)
+
+
+def _album_kinds(messages):
+    """Map an album back to the media vocabulary the table uses."""
+    return ["video" if m.video else "image" for m in messages]
+
+
+@pytest.mark.network
+@pytest.mark.parametrize("entry", live_links.E2E, ids=live_links.ids(live_links.E2E))
+async def test_pipeline_end_to_end(entry, client, chat_id, bot, tmp_path, monkeypatch):
+    """Every service, all the way through: probe, download, process, send, cache.
+
+    The other tests here hand the sender a file that was never downloaded, so they
+    cannot catch a platform whose own fetch path is broken — and Instagram's is the
+    most fragile of them (no login, a third-party fixer, an offload host that moves).
+    Runs against the **production** registry so the wiring and resolution order in
+    src/container.py are what gets exercised.
     """
-    live_env.skip_unless_youtube_env_ready()
+    if entry.platform is YouTubePlatform:
+        live_env.skip_unless_youtube_env_ready()
+    if entry.platform is InstagramPlatform and not live_env.tcp_reachable(
+        Config.IG_FIXER_URL, timeout=10
+    ):
+        pytest.skip(f"Instagram fixer host {Config.IG_FIXER_URL} is unreachable")
+
     downloads = tmp_path / "downloads"
     downloads.mkdir()
     monkeypatch.setattr(Config, "DOWNLOAD_DIR", str(downloads))
 
-    db = Database(str(tmp_path / "cache.db"))
+    from src.container import container  # lazy: keeps collection independent of it
+
+    db = Database(str(tmp_path / "dev_cache.db"))
     await db.initialize()
-    ytdlp, video = YtDlpClient(), VideoProcessor()
-    registry = PlatformRegistry([
-        YouTubePlatform(ytdlp, video),
-        GenericPlatform(ytdlp, video),
-    ])
-    orchestrator = DownloadOrchestrator(registry, TelegramSender(), db, max_concurrent=1)
-    incoming = Incoming(bot, chat_id)
+    orchestrator = DownloadOrchestrator(
+        container.registry, TelegramSender(), db, max_concurrent=1,
+    )
 
-    await orchestrator.handle_url(client, incoming, _E2E_URL)
+    await orchestrator.handle_url(client, Incoming(bot, chat_id), entry.url)
 
-    assert client.videos, "nothing reached Telegram; check the status message in the chat"
-    sent = client.videos[-1].video
-    assert sent.height > sent.width, f"short arrived as {sent.width}x{sent.height}"
-    assert sent.duration > 0
-    # handle_url swallows its own errors into a status message, so the cache row is
-    # what proves the run actually succeeded rather than reporting a failure.
-    file_id = await db.get_file_id("youtube", _E2E_VIDEO_ID)
-    assert file_id, "no cache row written, so the send path did not complete"
+    if entry.sends_as == "album":
+        assert client.groups, "nothing reached Telegram; check the dev chat's status message"
+        album = client.groups[-1]
+        # A carousel that silently loses items is the Instagram failure mode.
+        assert _album_kinds(album) == list(entry.media_types)
+        assert album[0].caption, "an album must carry the post caption on its first item"
+    elif entry.sends_as == "image":
+        assert client.photos, "no photo reached Telegram"
+        assert client.photos[-1].photo is not None
+    else:
+        assert client.videos, "no video reached Telegram"
+        video = client.videos[-1].video
+        assert video is not None, "Telegram filed it as something other than a video"
+        assert video.duration > 0, "a video sent with duration 0 has no seek bar"
+        # Dimensions must survive the whole pipeline, not just probe(): sent as 0
+        # Telegram renders a vertical clip as a squashed strip.
+        if entry.orientation == "portrait":
+            assert video.height > video.width, \
+                f"{entry.name} must stay portrait, Telegram reports {video.width}x{video.height}"
+        elif entry.orientation == "landscape":
+            assert video.width > video.height, \
+                f"{entry.name} must stay landscape, Telegram reports {video.width}x{video.height}"
+
+    # handle_url turns its own failures into a status message, so the cache row is
+    # what proves the run completed rather than reporting an error to the user.
+    rows = await _cache_rows(db)
+    assert len(rows) == (1 if entry.expects_cache_row else 0), \
+        f"expected {'one' if entry.expects_cache_row else 'no'} cache row, got {rows}"
     assert os.listdir(downloads) == [], "the per-request work dir was not cleaned up"
+
+
+@pytest.mark.network
+async def test_second_request_is_served_from_cache(client, chat_id, bot, tmp_path, monkeypatch):
+    """The same link twice: download once, then resend from the stored file_id.
+
+    Every other e2e case gets a *fresh* dev database precisely so a leftover
+    file_id can never short-circuit the download it is meant to exercise. This one
+    is the opposite: it keeps one dev database across both runs, because skipping
+    the download is the behaviour under test. Neither ever touches the production
+    cache at data/bot_database.db.
+
+    VK, because it needs no PO-token provider and the clip is 9 seconds.
+    """
+    entry = _entry("generic-vk-landscape")
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    monkeypatch.setattr(Config, "DOWNLOAD_DIR", str(downloads))
+
+    from src.container import container
+
+    db = Database(str(tmp_path / "dev_cache.db"))
+    await db.initialize()
+    orchestrator = DownloadOrchestrator(
+        container.registry, TelegramSender(), db, max_concurrent=1,
+    )
+
+    await orchestrator.handle_url(client, Incoming(bot, chat_id), entry.url)
+    rows = await _cache_rows(db)
+    assert len(rows) == 1, f"first run cached nothing: {rows}"
+    platform, video_id = rows[0]
+    file_id = await db.get_file_id(platform, video_id)
+    assert len(client.videos) == 1
+    assert client.video_kwargs[0]["video"] != file_id, "first run must upload a real file"
+
+    await orchestrator.handle_url(client, Incoming(bot, chat_id), entry.url)
+
+    assert len(client.videos) == 2, "the cached request delivered nothing"
+    # The proof it never re-downloaded: Telegram was handed the stored id, not a path.
+    assert client.video_kwargs[1]["video"] == file_id
+    assert await _cache_rows(db) == rows, "a cache hit must not add a row"
+    assert os.listdir(downloads) == [], "work dirs were left behind"

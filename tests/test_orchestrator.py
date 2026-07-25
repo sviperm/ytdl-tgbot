@@ -298,7 +298,10 @@ class FakeVideoProcessor:
         return path + "_thumb.jpg"
 
     async def probe_duration(self, path):
-        return 0
+        return 7
+
+    async def probe_dimensions(self, path):
+        return 720, 1280   # a reel: portrait
 
 
 async def _run_instagram(media, tmp_dirs):
@@ -335,3 +338,14 @@ async def test_single_instagram_video_gets_an_upload_bar(tmp_dirs):
     assert kind == "video"
     assert kw["progress"] is not None      # used to be None for Instagram
     assert ig.progress_hooks[0] is not None
+
+
+async def test_instagram_video_dimensions_are_probed_off_the_file(tmp_dirs):
+    """Instagram's fetch chain reports no dimensions, so they come from ffprobe.
+
+    Sent as 0x0, Telegram renders a vertical reel as a squashed strip.
+    """
+    _, client = await _run_instagram([{"type": "video", "url": "http://cdn/reel.mp4"}], tmp_dirs)
+    _, kw = client.calls[0]
+    assert (kw["width"], kw["height"]) == (720, 1280)
+    assert kw["duration"] == 7

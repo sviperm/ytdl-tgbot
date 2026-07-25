@@ -68,3 +68,20 @@ def test_make_thumbnail_argv(processor, monkeypatch, tmp_path):
     assert out.endswith("_thumb.jpg")
     assert "-vframes" in captured["cmd"] and "1" in captured["cmd"]
     assert any("scale=320" in tok for tok in captured["cmd"])
+
+
+def test_probe_dimensions_parses_csv(processor, monkeypatch):
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="720x1280\n", stderr=""),
+    )
+    assert processor._probe_dimensions("x.mp4") == (720, 1280)
+
+
+def test_probe_dimensions_survives_ffprobe_failure(processor, monkeypatch):
+    def boom(*a, **k):
+        raise OSError("no ffprobe")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    # (0, 0) rather than a crash: a missing size must not fail the whole send.
+    assert processor._probe_dimensions("x.mp4") == (0, 0)
