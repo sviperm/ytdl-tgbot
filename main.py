@@ -2,23 +2,23 @@ import asyncio
 
 # Pyrogram 2.0.106 calls asyncio.get_event_loop() at import time. Python 3.14 removed
 # the implicit creation of a loop in the main thread, so ensure one exists first.
+# This must stay before any import that pulls in pyrogram (incl. src.container).
 try:
     asyncio.get_event_loop()
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 from pyrogram.client import Client
+
 from src.config import Config
-from src.database.models import Database
-
+from src.container import container
 from src.utils.logger import logger
-
-# Initialize database
-db = Database()
 
 
 async def main():
-    await db.initialize()
+    Config.validate()
+    Config.ensure_dirs()
+    await container.db.initialize()
 
     app = Client(
         "ytdl_bot",
@@ -26,13 +26,14 @@ async def main():
         api_hash=Config.API_HASH,
         bot_token=Config.BOT_TOKEN,
         workdir=Config.DATA_DIR,  # keep the .session file in the writable, mounted data dir
-        plugins=dict(root="src.bot")
+        plugins=dict(root="src.bot"),
     )
 
     logger.info("Bot is starting...")
     await app.start()
     logger.info("Bot is running!")
     await asyncio.Event().wait()
+
 
 if __name__ == "__main__":
     try:

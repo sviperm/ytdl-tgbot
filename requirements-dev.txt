@@ -1,3 +1,5 @@
 # Local-development-only dependencies (not needed in the Docker image).
 # Install with: ./venv/bin/pip install -r requirements-dev.txt
 watchdog        # file watcher powering `make dev` hot-reload
+pytest          # test runner
+pytest-asyncio  # async test support (asyncio_mode=auto)
