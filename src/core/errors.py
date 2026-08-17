@@ -29,6 +29,14 @@ class AuthRequiredError(PlatformError):
         super().__init__(message, user_message)
 
 
+class UnsupportedLinkError(PlatformError):
+    """The platform owns this URL but there is no single post behind it."""
+
+    def __init__(self, message="unsupported link",
+                 user_message="This link doesn't point at a downloadable post."):
+        super().__init__(message, user_message)
+
+
 class DownloadError(PlatformError):
     def __init__(self, message="download failed", user_message="Download failed."):
         super().__init__(message, user_message)

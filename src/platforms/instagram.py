@@ -4,7 +4,7 @@ from dataclasses import replace
 
 from src.platforms.base import Platform
 from src.core.models import MediaItem, PostMeta, Post
-from src.core.errors import FetchError
+from src.core.errors import FetchError, UnsupportedLinkError
 from src.services.progress import FileDownloadProgress
 from src.utils.captions import build_ig_caption
 from src.utils.logger import logger
@@ -22,9 +22,22 @@ class InstagramPlatform(Platform):
     def matches(self, url):
         return is_instagram_url(url)
 
+    def is_media_link(self, url):
+        return bool(extract_shortcode(url))
+
     async def probe(self, url):
         # Pure: Instagram posts are never cached, so no network here.
-        return PostMeta(video_id=extract_shortcode(url), platform="instagram", supports_cache=False)
+        shortcode = extract_shortcode(url)
+        if not shortcode:
+            # A profile or story link: no post id, so there is nothing to fetch.
+            # Neither can be listed without a login, so it fails here, once.
+            raise UnsupportedLinkError(
+                message=f"no post id in {url}",
+                user_message=("🔗 This is an Instagram profile or story link, not a post. "
+                              "Send a link to a specific post or reel "
+                              "(instagram.com/p/... or /reel/...)."),
+            )
+        return PostMeta(video_id=shortcode, platform="instagram", supports_cache=False)
 
     async def fetch(self, url, meta, status, work_dir):
         post = await self.ig.fetch(url)

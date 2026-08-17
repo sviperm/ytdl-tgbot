@@ -83,10 +83,37 @@ def make_embed_html(sm):
     ("https://www.instagram.com/reels/XYZ/", "XYZ"),
     ("https://www.instagram.com/tv/TTT/", "TTT"),
     ("https://www.instagram.com/someuser/p/COD-e_1/", "COD-e_1"),
+    ("https://www.instagram.com/gesunde.finanzen.de?igsh=OGNyejFy", None),  # a profile
+    ("https://www.instagram.com/stories/someuser/3456789/", None),
     ("https://youtu.be/x", None),
 ])
 def test_extract_shortcode(url, code):
     assert extract_shortcode(url) == code
+
+
+# --- profile / story links ----------------------------------------------------
+
+PROFILE_URL = "https://www.instagram.com/gesunde.finanzen.de?igsh=OGNyejFyc3pkcDQ4"
+
+
+async def test_probe_rejects_a_profile_link_with_a_clear_message():
+    """It used to reach the fetch chain and report "private/deleted" instead."""
+    from src.platforms.instagram import InstagramPlatform
+    from src.core.errors import UnsupportedLinkError
+
+    with pytest.raises(UnsupportedLinkError) as e:
+        await InstagramPlatform(None, None).probe(PROFILE_URL)
+    assert "profile" in e.value.user_message
+    assert "reel" in e.value.user_message
+
+
+def test_a_profile_link_is_not_a_media_link():
+    from src.platforms.instagram import InstagramPlatform
+
+    platform = InstagramPlatform(None, None)
+    assert platform.matches(PROFILE_URL)              # still ours to answer for
+    assert not platform.is_media_link(PROFILE_URL)    # but nothing to download
+    assert platform.is_media_link("https://www.instagram.com/reel/DZ9sTMZMX7I/")
 
 
 def test_is_instagram_url():

@@ -2,11 +2,13 @@ import os
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from fakes import FakeChatMessage
 
 from src.bot.orchestrator import DownloadOrchestrator
 from src.core.models import Post, PostMeta, MediaItem
-from src.core.errors import AuthRequiredError
+from src.core.errors import AuthRequiredError, UnsupportedLinkError
 from src.services.sender import SendResult
 
 
@@ -212,12 +214,13 @@ async def test_gives_up_after_the_configured_number_of_attempts(tmp_dirs):
     assert msg.status.edits[-1] == "Something went wrong while handling this link. Please try again."
 
 
-async def test_auth_error_is_not_retried(tmp_dirs):
-    plat = FakePlatform(None, probe_error=AuthRequiredError())
+@pytest.mark.parametrize("error", [AuthRequiredError(), UnsupportedLinkError()])
+async def test_a_verdict_is_not_retried(tmp_dirs, error):
+    plat = FakePlatform(None, probe_error=error)
     msg = FakeChatMessage()
     await _orch(plat, attempts=3).handle_url(object(), msg, "url")
     assert plat.probe_calls == 1
-    assert msg.status.edits[-1] == AuthRequiredError().user_message
+    assert msg.status.edits[-1] == error.user_message
 
 
 async def test_a_post_without_media_is_retried(tmp_dirs):

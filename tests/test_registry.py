@@ -44,6 +44,7 @@ def test_no_match_for_non_http(registry, url):
 @pytest.mark.parametrize("url,expected", [
     ("https://m.youtube.com/shorts/xOs8qxm2KOI", True),
     ("https://www.instagram.com/reel/DZ9sTMZMX7I/", True),
+    ("https://www.instagram.com/gesunde.finanzen.de?igsh=x", False),  # a profile
     ("https://www.pornhub.com/view_video.php?viewkey=abc", True),
     ("https://vk.com/video-1_2", True),          # Generic, but yt-dlp knows the site
     ("https://vimeo.com/12345", True),

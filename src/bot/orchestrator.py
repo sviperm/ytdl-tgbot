@@ -6,7 +6,7 @@ import asyncio
 from uuid import uuid4
 
 from src.config import Config
-from src.core.errors import PlatformError, AuthRequiredError, FetchError
+from src.core.errors import PlatformError, AuthRequiredError, UnsupportedLinkError, FetchError
 from src.services.status import StatusReporter
 from src.utils.logger import logger
 
@@ -15,8 +15,9 @@ from src.utils.logger import logger
 _UNEXPECTED_MESSAGE = "Something went wrong while handling this link. Please try again."
 _NO_MEDIA_MESSAGE = "Failed to extract video info. Are you sure the link is valid?"
 
-# A login wall is a verdict, not a hiccup — retrying it only delays the message.
-_PERMANENT_ERRORS = (AuthRequiredError,)
+# Verdicts, not hiccups (a login wall, a link with no post behind it): retrying
+# one only delays the message.
+_PERMANENT_ERRORS = (AuthRequiredError, UnsupportedLinkError)
 
 
 def _reset_dir(path):
