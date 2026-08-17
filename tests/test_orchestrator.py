@@ -22,29 +22,41 @@ class FakePlatform:
     name = "fake"
     initial_status = "Extracting info..."
 
-    def __init__(self, meta, post=None, probe_error=None, fetch_error=None, on_fetch=None):
+    def __init__(self, meta, post=None, probe_error=None, fetch_error=None, on_fetch=None,
+                 probe_failures=0, fetch_failures=0):
         self._meta = meta
         self._post = post
         self._err = probe_error
         self._fetch_err = fetch_error
         self._on_fetch = on_fetch
+        # 0 = fail every call; N = fail only the first N (a transient failure).
+        self._probe_failures = probe_failures
+        self._fetch_failures = fetch_failures
         self.fetched = False
+        self.probe_calls = 0
+        self.fetch_calls = 0
         self.work_dirs = []
+
+    @staticmethod
+    def _fails(call, budget):
+        return budget == 0 or call <= budget
 
     def matches(self, url):
         return True
 
     async def probe(self, url):
-        if self._err:
+        self.probe_calls += 1
+        if self._err and self._fails(self.probe_calls, self._probe_failures):
             raise self._err
         return self._meta
 
     async def fetch(self, url, meta, status, work_dir):
         self.fetched = True
+        self.fetch_calls += 1
         self.work_dirs.append(work_dir)
         if self._on_fetch:
             await self._on_fetch(work_dir)
-        if self._fetch_err:
+        if self._fetch_err and self._fails(self.fetch_calls, self._fetch_failures):
             raise self._fetch_err
         return self._post
 
@@ -64,16 +76,19 @@ class FakeDB:
 
 
 class FakeSender:
-    def __init__(self, file_id="FID"):
+    def __init__(self, file_id="FID", send_failures=0):
         self.cached = []
         self.posts = []
         self._file_id = file_id
+        self._send_failures = send_failures
 
     async def send_cached_video(self, client, chat_id, file_id, meta):
         self.cached.append(file_id)
 
     async def send_post(self, client, chat_id, post, status):
         self.posts.append(post)
+        if len(self.posts) <= self._send_failures:
+            raise RuntimeError("upload dropped")
         return SendResult(file_id=self._file_id)
 
 
@@ -83,9 +98,11 @@ def _meta(**kw):
     return PostMeta(**base)
 
 
-def _orch(platform, sender=None, db=None, max_concurrent=None):
+def _orch(platform, sender=None, db=None, max_concurrent=None, attempts=None, retry_delay=0):
+    # retry_delay=0: only the timing test should pay the real Config.RETRY_DELAY.
     return DownloadOrchestrator(
         FakeRegistry(platform), sender or FakeSender(), db or FakeDB(), max_concurrent,
+        attempts, retry_delay,
     )
 
 
@@ -155,6 +172,104 @@ async def test_unexpected_error_hides_the_exception_text(tmp_dirs):
     last = msg.status.edits[-1]
     assert "secret" not in last and "10.0.0.1" not in last
     assert last == "Something went wrong while handling this link. Please try again."
+
+
+# --- retries ------------------------------------------------------------------
+
+def _good(meta=None):
+    meta = meta or _meta()
+    return Post(meta=meta, media=[MediaItem("video", "x.mp4")])
+
+
+async def test_transient_probe_failure_is_retried(tmp_dirs):
+    meta = _meta()
+    plat = FakePlatform(meta, post=_good(meta), probe_error=RuntimeError("PO token provider down"),
+                        probe_failures=1)
+    sender, msg = FakeSender(), FakeChatMessage()
+    await _orch(plat, sender, attempts=3).handle_url(object(), msg, "url")
+    assert plat.probe_calls == 2
+    assert len(sender.posts) == 1
+    assert msg.status.deleted              # no error left on screen
+
+
+async def test_transient_fetch_failure_is_retried(tmp_dirs):
+    meta = _meta()
+    plat = FakePlatform(meta, post=_good(meta), fetch_error=RuntimeError("connection reset"),
+                        fetch_failures=2)
+    sender, msg = FakeSender(), FakeChatMessage()
+    await _orch(plat, sender, attempts=3).handle_url(object(), msg, "url")
+    assert plat.fetch_calls == 3           # the last attempt still wins
+    assert len(sender.posts) == 1
+    assert any("Retrying (2/3)" in edit for edit in msg.status.edits)
+
+
+async def test_gives_up_after_the_configured_number_of_attempts(tmp_dirs):
+    plat = FakePlatform(_meta(), fetch_error=RuntimeError("still broken"))
+    sender, msg = FakeSender(), FakeChatMessage()
+    await _orch(plat, sender, attempts=3).handle_url(object(), msg, "url")
+    assert plat.fetch_calls == 3
+    assert sender.posts == []
+    assert msg.status.edits[-1] == "Something went wrong while handling this link. Please try again."
+
+
+async def test_auth_error_is_not_retried(tmp_dirs):
+    plat = FakePlatform(None, probe_error=AuthRequiredError())
+    msg = FakeChatMessage()
+    await _orch(plat, attempts=3).handle_url(object(), msg, "url")
+    assert plat.probe_calls == 1
+    assert msg.status.edits[-1] == AuthRequiredError().user_message
+
+
+async def test_a_post_without_media_is_retried(tmp_dirs):
+    """Instagram's chain can come back empty — a failure, not a result."""
+    meta = _meta()
+    plat = FakePlatform(meta, post=Post(meta=meta, media=[]))
+    msg = FakeChatMessage()
+    await _orch(plat, attempts=3).handle_url(object(), msg, "url")
+    assert plat.fetch_calls == 3
+    assert msg.status.edits[-1] == "Failed to extract video info. Are you sure the link is valid?"
+
+
+async def test_work_dir_is_wiped_between_attempts(tmp_dirs):
+    """yt-dlp resumes a .part, so a retry must not inherit the failed attempt's."""
+    listings = []
+
+    async def write_partial(work_dir):
+        listings.append(sorted(os.listdir(work_dir)))
+        Path(work_dir, "half.part").write_bytes(b"partial")
+
+    meta = _meta()
+    plat = FakePlatform(meta, post=_good(meta), fetch_error=RuntimeError("connection reset"),
+                        fetch_failures=1, on_fetch=write_partial)
+    await _orch(plat, attempts=3).handle_url(object(), FakeChatMessage(), "url")
+    assert listings == [[], []]                    # both attempts started clean
+    assert plat.work_dirs[0] == plat.work_dirs[1]  # same dir, emptied in place
+
+
+async def test_upload_failure_is_retried(tmp_dirs):
+    meta = _meta()
+    plat = FakePlatform(meta, post=_good(meta))
+    sender, db, msg = FakeSender(file_id="NEWFID", send_failures=1), FakeDB(), FakeChatMessage()
+    await _orch(plat, sender, db, attempts=3).handle_url(object(), msg, "url")
+    assert len(sender.posts) == 2
+    assert plat.fetch_calls == 1                   # no pointless re-download
+    assert db.added == [("youtube", "v1", "NEWFID", "T")]
+    assert msg.status.deleted
+
+
+async def test_retry_waits_between_attempts(tmp_dirs):
+    meta = _meta()
+    plat = FakePlatform(meta, post=_good(meta), fetch_error=RuntimeError("boom"), fetch_failures=2)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    await _orch(plat, attempts=3, retry_delay=0.05).handle_url(object(), FakeChatMessage(), "url")
+    assert loop.time() - started >= 0.1            # two waits, not zero
+
+
+async def test_retrying_can_be_switched_off(tmp_dirs):
+    plat = FakePlatform(_meta(), fetch_error=RuntimeError("boom"))
+    await _orch(plat, attempts=1).handle_url(object(), FakeChatMessage(), "url")
+    assert plat.fetch_calls == 1
 
 
 async def test_work_dir_is_removed_after_a_successful_send(tmp_dirs):

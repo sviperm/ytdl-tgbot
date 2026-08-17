@@ -17,6 +17,14 @@ def _parse_int(raw, default=0):
         return default
 
 
+def _parse_float(raw, default=0.0):
+    """Best-effort float from an env value; a malformed value must not break import."""
+    try:
+        return float(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+
+
 class Config:
     """Configuration loaded from environment variables.
 
@@ -48,6 +56,11 @@ class Config:
 
     # Downloading + transcoding are CPU/disk bound; cap how many run at once
     MAX_CONCURRENT_DOWNLOADS = _parse_int(os.getenv("MAX_CONCURRENT_DOWNLOADS"), 2)
+
+    # Transient failures: each network step is attempted this many times, this many
+    # seconds apart (1 attempt = no retrying).
+    RETRY_ATTEMPTS = max(1, _parse_int(os.getenv("RETRY_ATTEMPTS"), 3))
+    RETRY_DELAY = max(0.0, _parse_float(os.getenv("RETRY_DELAY"), 2.0))
 
     # PO Token provider (bgutil HTTP server) for unlocking high-quality YouTube formats
     POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://127.0.0.1:4416")

@@ -6,17 +6,28 @@ import asyncio
 from uuid import uuid4
 
 from src.config import Config
-from src.core.errors import PlatformError, FetchError
+from src.core.errors import PlatformError, AuthRequiredError, FetchError
 from src.services.status import StatusReporter
 from src.utils.logger import logger
 
 # Raw exception text can carry local paths and internal URLs, so the user gets a
 # fixed line and the detail goes to the log.
 _UNEXPECTED_MESSAGE = "Something went wrong while handling this link. Please try again."
+_NO_MEDIA_MESSAGE = "Failed to extract video info. Are you sure the link is valid?"
+
+# A login wall is a verdict, not a hiccup — retrying it only delays the message.
+_PERMANENT_ERRORS = (AuthRequiredError,)
+
+
+def _reset_dir(path):
+    """Empty the work dir: yt-dlp would resume a failed attempt's ``.part``."""
+    shutil.rmtree(path, ignore_errors=True)
+    os.makedirs(path, exist_ok=True)
 
 
 class DownloadOrchestrator:
-    def __init__(self, registry, sender, db, max_concurrent=None):
+    def __init__(self, registry, sender, db, max_concurrent=None,
+                 attempts=None, retry_delay=None):
         self.registry = registry
         self.sender = sender
         self.db = db
@@ -24,6 +35,9 @@ class DownloadOrchestrator:
         # downloading and transcoding are CPU/disk bound, so N parallel requests
         # would mean N ffmpeg runs fighting over a small VPS.
         self._downloads = asyncio.Semaphore(max_concurrent or Config.MAX_CONCURRENT_DOWNLOADS)
+        self._attempts = attempts or Config.RETRY_ATTEMPTS
+        # None, not falsiness: 0 is a legitimate delay.
+        self._retry_delay = Config.RETRY_DELAY if retry_delay is None else retry_delay
 
     async def handle_url(self, client, message, url):
         platform = self.registry.resolve(url)
@@ -32,7 +46,7 @@ class DownloadOrchestrator:
         status = StatusReporter(await message.reply_text(platform.initial_status))
         work_dir = None
         try:
-            meta = await platform.probe(url)
+            meta = await self._retrying(lambda: platform.probe(url), url, status)
 
             if meta.supports_cache and meta.video_id:
                 file_id = await self.db.get_file_id(meta.platform, meta.video_id)
@@ -54,13 +68,13 @@ class DownloadOrchestrator:
             os.makedirs(work_dir, exist_ok=True)
 
             post = await self._fetch(platform, url, meta, status, work_dir)
-            if not post.media:
-                raise FetchError(user_message="Failed to extract video info. Are you sure the link is valid?")
 
             # fetch() refines the metadata it was given, so caption/duration/cache
             # key all come from the post now, not from the probe result above.
             final = post.meta
-            result = await self.sender.send_post(client, message.chat.id, post, status)
+            result = await self._retrying(
+                lambda: self.sender.send_post(client, message.chat.id, post, status), url, status,
+            )
 
             if final.supports_cache and final.video_id and result.file_id:
                 await self.db.add_file_id(final.platform, final.video_id, result.file_id, final.title)
@@ -78,12 +92,47 @@ class DownloadOrchestrator:
                 logger.info(f"Cleaned up work dir: {work_dir}")
 
     async def _fetch(self, platform, url, meta, status, work_dir):
-        """Download + process under the concurrency cap.
+        """Download + process under the concurrency cap, retried on failure.
 
         The Telegram upload is deliberately left outside: it is network bound, and
-        holding a slot through it would idle the CPU budget.
+        holding a slot through it would idle the CPU budget. So is the wait between
+        two attempts, so a request sleeping before its retry frees its slot.
         """
-        if self._downloads.locked():
-            await status.set("Queued: waiting for a free download slot...")
-        async with self._downloads:
-            return await platform.fetch(url, meta, status, work_dir)
+        async def attempt():
+            if self._downloads.locked():
+                await status.set("Queued: waiting for a free download slot...")
+            async with self._downloads:
+                post = await platform.fetch(url, meta, status, work_dir)
+            if not post.media:  # a failed fetch, not a valid result — retry it too
+                raise FetchError(message=f"fetch produced no media for {url}",
+                                 user_message=_NO_MEDIA_MESSAGE)
+            return post
+
+        return await self._retrying(attempt, url, status,
+                                    before_retry=lambda: _reset_dir(work_dir))
+
+    async def _retrying(self, operation, url, status, before_retry=None):
+        """Await ``operation()`` — a coroutine factory — again after a failure.
+
+        Services fail for reasons unrelated to the link (PO-token hiccup, stale
+        media URL, fixer host blinking out, dropped upload), so every network step
+        gets ``Config.RETRY_ATTEMPTS`` tries. Only ``_PERMANENT_ERRORS`` skip them.
+        """
+        for attempt in range(1, self._attempts + 1):
+            try:
+                return await operation()
+            except _PERMANENT_ERRORS:
+                raise
+            except Exception as e:
+                if attempt == self._attempts:
+                    raise
+                logger.warning(
+                    f"Attempt {attempt}/{self._attempts} failed for {url}: "
+                    f"{type(e).__name__}: {e}. Retrying in {self._retry_delay}s."
+                )
+                await status.set(
+                    f"Attempt {attempt} failed. Retrying ({attempt + 1}/{self._attempts})..."
+                )
+                if before_retry:
+                    before_retry()
+                await asyncio.sleep(self._retry_delay)
