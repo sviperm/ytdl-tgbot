@@ -10,6 +10,10 @@ class Platform(ABC):
     def matches(self, url):
         """True if this platform handles the given URL."""
 
+    def is_media_link(self, url):
+        """True if there is media behind this URL — matches() only says who owns it."""
+        return self.matches(url)
+
     @abstractmethod
     async def probe(self, url):
         """Return cheap PostMeta for the cache check. May raise PlatformError."""

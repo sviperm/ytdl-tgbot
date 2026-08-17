@@ -41,6 +41,29 @@ def test_no_match_for_non_http(registry, url):
     assert registry.resolve(url) is None
 
 
+@pytest.mark.parametrize("url,expected", [
+    ("https://m.youtube.com/shorts/xOs8qxm2KOI", True),
+    ("https://www.instagram.com/reel/DZ9sTMZMX7I/", True),
+    ("https://www.pornhub.com/view_video.php?viewkey=abc", True),
+    ("https://vk.com/video-1_2", True),          # Generic, but yt-dlp knows the site
+    ("https://vimeo.com/12345", True),
+    ("https://t.me/channel/45", True),           # a channel post can hold a video
+    ("https://t.me/channelname", False),         # a bare subscribe link cannot
+    ("https://www.rbc.ru/news/12345", False),
+    ("https://telegra.ph/Post-01-01", False),
+    ("not a url", False),
+])
+def test_is_media_link(registry, url, expected):
+    assert registry.is_media_link(url) is expected
+
+
+def test_matches_is_not_media_link_for_the_catch_all(registry):
+    """Generic owns every URL; only yt-dlp's extractor list narrows it to media."""
+    article = "https://www.rbc.ru/news/12345"
+    assert registry.resolve(article) is not None
+    assert registry.is_media_link(article) is False
+
+
 def test_generic_owns_the_catch_all_name_not_the_base():
     """The shared base used to be named "generic" too, leaving GenericPlatform empty."""
     assert GenericPlatform.name == "generic"

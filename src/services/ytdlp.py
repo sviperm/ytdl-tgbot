@@ -5,6 +5,7 @@ import shutil
 import asyncio
 
 import yt_dlp
+from yt_dlp.extractor import gen_extractor_classes
 
 from src.config import Config
 from src.utils.logger import logger
@@ -42,6 +43,21 @@ _STALE_URL_MARKERS = ("http error 403", "forbidden", "unable to download video d
 def _is_retryable_download_error(message):
     lowered = (message or "").lower()
     return any(marker in lowered for marker in _STALE_URL_MARKERS)
+
+
+_site_extractors = None
+
+
+def has_dedicated_extractor(url):
+    """True when yt-dlp has a site-specific extractor for this URL (offline, regex).
+
+    Tells a media link apart from any other link in a post; the catch-all 'generic'
+    extractor claims every URL, so it is excluded.
+    """
+    global _site_extractors
+    if _site_extractors is None:
+        _site_extractors = [ie for ie in gen_extractor_classes() if ie.ie_key() != "Generic"]
+    return any(ie.suitable(url) for ie in _site_extractors)
 
 
 class YtDlpClient:

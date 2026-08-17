@@ -15,3 +15,8 @@ class PlatformRegistry:
             if platform.matches(url):
                 return platform
         return None
+
+    def is_media_link(self, url):
+        """True if the owning platform expects media behind this URL."""
+        platform = self.resolve(url)
+        return platform is not None and platform.is_media_link(url)

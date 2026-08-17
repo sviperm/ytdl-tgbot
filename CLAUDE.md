@@ -8,8 +8,19 @@ A Telegram bot that downloads videos/posts and re-uploads them as native Telegra
 
 **Product invariants** — judge changes against these, not just against generic best practice:
 - One unified interface per service: a URL routes to a `Platform` that returns a normalized `Post`; shared services download, process, and send.
+- A message does not have to *be* a link: every link in a forwarded post is found and every media one is downloaded.
 - Every platform shows a **download** progress bar (service → server) *and* an **upload** progress bar (server → Telegram).
 - Every post carries a caption whose title links back to the source, with tracking params stripped.
+
+## Code style
+
+**Comment sparingly.** A comment earns its place only by saying what the code cannot: a non-obvious *why*, a constraint imposed from outside, a trap someone would otherwise re-introduce. Reviewers here read comments as claims to verify, so noise costs more than it gives.
+
+- Never restate the line below it, and never narrate a step (`# download the file`).
+- No docstring on a short function whose name and signature already say it. One line when it does need one.
+- A multi-line docstring is for an invariant or trade-off that would otherwise be lost — not for prose about how the function works.
+- If the explanation is longer than the code, it belongs in this file (architecture, gotchas), not inline.
+- Match the comment density of the file being edited, and leave comments in untouched code alone.
 
 ## Commands
 
@@ -46,13 +57,15 @@ Entry point `main.py`: event-loop shim (Pyrogram 2.0.106 calls `asyncio.get_even
 **Pyrogram plugin root:** only `@Client.on_message`-decorated functions under `src/bot/` are auto-registered. `src/bot/handlers.py` (the decorated, thin handlers) delegates to `container.orchestrator`; `src/bot/orchestrator.py` sits under the plugin root too but has no decorators, so it's just imported, not double-registered.
 
 Layout:
-- `src/platforms/` — `Platform` ABC (`base.py`) with `matches(url)`, `probe(url)->PostMeta`, `fetch(url, meta, status, work_dir)->Post`. `ytdlp_base.py` (`YtDlpPlatform`) is the **abstract** shared yt-dlp probe/download/process flow (not registrable on its own); `youtube.py` adds the PO-token `extractor_args`, `pornhub.py` overrides `normalize_url` (shorties→`view_video`), `generic.py` is the concrete catch-all. `instagram.py` is separate. `registry.py` resolves in order `[Instagram, PornHub, YouTube, Generic]` (Generic last) and exposes a read-only `platforms` view.
+- `src/platforms/` — `Platform` ABC (`base.py`) with `matches(url)`, `is_media_link(url)` (defaults to `matches`; see **Link scanning**), `probe(url)->PostMeta`, `fetch(url, meta, status, work_dir)->Post`. `ytdlp_base.py` (`YtDlpPlatform`) is the **abstract** shared yt-dlp probe/download/process flow (not registrable on its own); `youtube.py` adds the PO-token `extractor_args`, `pornhub.py` overrides `normalize_url` (shorties→`view_video`), `generic.py` is the concrete catch-all. `instagram.py` is separate. `registry.py` resolves in order `[Instagram, PornHub, YouTube, Generic]` (Generic last), answers `is_media_link(url)` by delegating to the owning platform, and exposes a read-only `platforms` view.
 - `src/services/` — `ytdlp.py` (`YtDlpClient`: format string, live cookiefile, per-call `extractor_args`; `extract_info` returns `(info, error)` and `download` returns `(path, info, error)` — stateless, plus `is_auth_error()` for the login-wall heuristic), `video.py` (`VideoProcessor`: H.264 transcode / thumbnail / probe), `http.py` (`HttpClient`: curl_cffi impersonation, `has_proxy` property, streaming `download(..., on_progress)` that never buffers a whole file in RAM), `instagram_client.py` (`InstagramClient`: the no-login fetch chain), `sender.py` (`TelegramSender`: single vs media-group send, returns `file_id`; a single video always gets an `UploadProgress` — Pyrogram 2.0.106's `send_media_group` takes no progress callback, so a group upload can only announce that it started), `progress.py` (`_ThreadedProgress` base doing the worker-thread→loop hop; `DownloadProgress` for yt-dlp hooks, `FileDownloadProgress` for byte callbacks, `UploadProgress` for Pyrogram), `status.py` (`StatusReporter`).
 - `src/bot/orchestrator.py` — `DownloadOrchestrator.handle_url`: resolve → `probe` → cache check (single videos only) → create per-request work dir → `fetch` under a semaphore → `send` → store `file_id` → `rmtree(work_dir)` in `finally`. Each of those network steps runs through `_retrying` (see **Retries**).
 - `src/core/` — `models.py` (`MediaItem`, `PostMeta`, `Post`), `errors.py` (`PlatformError` hierarchy carrying the user-facing message).
 - `src/storage/database.py` — `Database` (aiosqlite, single `videos` table): `get_file_id(platform, video_id)` / `add_file_id(platform, video_id, file_id, title)` (upsert, so a re-download replaces an invalidated `file_id`). `initialize()` also migrates a pre-composite-key DB in one transaction. `src/utils/` — `logger.py` (module-level `logger`, console + one file per day, nothing opened at import), `urls.py` (`clean_url`, `is_http_url`), `captions.py`.
 
 **Per-request work dir.** The orchestrator creates `DOWNLOAD_DIR/<uuid hex[:12]>` *after* the cache check and `shutil.rmtree`s it unconditionally in `finally`. Every platform must write inside the `work_dir` it is handed. This is what keeps concurrent requests for the same video from colliding on one output path, and what stops a `fetch` that raises halfway from leaking partial files.
+
+**Link scanning.** A handler works on any text/caption message, not only on one that *is* a URL: `extract_urls(text, extra)` (`src/utils/urls.py`) regex-scans the text, trims sentence/markdown punctuation (a closing bracket is kept when it has an opener), merges Telegram's hidden `text_link` hrefs (`_hidden_urls` in `handlers.py` — only entities carrying a `url`, which sidesteps UTF-16 entity offsets entirely) and dedupes. `_targets()` then decides what to act on: **links a platform recognizes as media**, or — when none do — a lone link taken at face value, so an exotic site keeps working the way a pasted link always has. Everything else in a post (the source article, the `t.me/channel` subscribe link) is dropped silently, since acting on it would mean an error message per unrelated link. `GenericPlatform.is_media_link` is what makes that distinction possible: it defers to `has_dedicated_extractor(url)` (`services/ytdlp.py`), which asks yt-dlp's ~1700 site extractors — all but the catch-all `Generic` — offline, by regex, and caches the class list on first use. Multiple targets are handled sequentially, each with its own status message.
 
 **Retries.** `DownloadOrchestrator._retrying(operation, ...)` takes a *coroutine factory* and re-runs it up to `Config.RETRY_ATTEMPTS` times, `Config.RETRY_DELAY` seconds apart, announcing each retry in the status message. It wraps `probe`, `fetch` (including the "post has no media" check, so an empty result retries like a raised error), and `send_post` — so every platform gets retries from the shared layer rather than implementing its own. Any exception is treated as transient **except** `_PERMANENT_ERRORS` (`AuthRequiredError`: a login wall is a verdict, and retrying only delays the message). Two invariants make a retry safe: the work dir is emptied in place between fetch attempts (`_reset_dir` — yt-dlp resumes a `.part`, so a truncated fragment would otherwise be inherited by the retry), and the download semaphore is released across the wait, so a sleeping request never blocks a queued one. This sits *above* `YtDlpClient._download`'s own single 403 re-extraction — the two compose deliberately.
 
@@ -76,7 +89,7 @@ Layout:
 
 Missing infrastructure **skips** with a reason instead of failing — a live test may only go red when the code is wrong. Those probes live in `tests/live_env.py` (`tcp_reachable`, `skip_unless_youtube_env_ready`, `skip_unless_ffmpeg`), shared by both live tiers.
 
-Coverage: URL routing, `clean_url`/captions/`is_http_url`, handler whitelist, PornHub normalization, Instagram parsers on synthetic fixtures, yt-dlp client, video processor, sender, progress throttling, `Database` (composite key + migration), and orchestrator cache/error/cleanup/concurrency/retry flow (`_orch` in `tests/test_orchestrator.py` passes `retry_delay=0`, so only the timing test actually waits).
+Coverage: URL routing, `is_media_link` per host, `clean_url`/captions/`is_http_url`/`extract_urls`, handler whitelist + forwarded-post link scanning, PornHub normalization, Instagram parsers on synthetic fixtures, yt-dlp client, video processor, sender, progress throttling, `Database` (composite key + migration), and orchestrator cache/error/cleanup/concurrency/retry flow (`_orch` in `tests/test_orchestrator.py` passes `retry_delay=0`, so only the timing test actually waits).
 
 ## Gotchas
 

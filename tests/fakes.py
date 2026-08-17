@@ -40,8 +40,11 @@ class FakeStatusMessage:
 class FakeChatMessage:
     """Stand-in for the incoming Pyrogram message a handler receives."""
 
-    def __init__(self, text="", user_id=1, chat_id=42):
+    def __init__(self, text="", user_id=1, chat_id=42, entities=None, caption=None):
         self.text = text
+        self.caption = caption
+        self.entities = entities
+        self.caption_entities = None
         self.chat = SimpleNamespace(id=chat_id)
         self.from_user = SimpleNamespace(id=user_id)
         self.status = None
