@@ -4,7 +4,9 @@ Pyrogram==2.0.106
 PySocks==1.7.1
 python-dotenv==1.2.1
 TgCrypto==1.2.5
-yt-dlp==2026.7.4
+# Nightly: the stable channel has no working SABR downloader, so YouTube's
+# SABR-forced 1080p formats 403 mid-download. Bump when YouTube breaks again.
+yt-dlp==2026.8.18.122307.dev0
 yt-dlp-ejs
 curl_cffi>=0.10,<0.16
 bgutil-ytdlp-pot-provider
