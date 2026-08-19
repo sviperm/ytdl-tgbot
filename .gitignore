@@ -222,3 +222,4 @@ cookies.bkp.txt
 ytdl_bot.session*
 # Persistent state (db, cookies)
 data/
+.claude/settings.local.json
