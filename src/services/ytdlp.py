@@ -37,7 +37,14 @@ def is_auth_error(message):
 
 
 # Failures that mean "the signed media URL went stale", not "this video is broken".
-_STALE_URL_MARKERS = ("http error 403", "forbidden", "unable to download video data")
+# 503 belongs here too: YouTube answers it mid-download on a URL it has stopped
+# serving, and yt-dlp then burns its whole internal backoff on that one dead URL
+# (observed: 24 minutes of "Giving up after 10 retries" before the bot gave up).
+# Re-extracting gets a freshly signed URL within seconds, which is what recovers.
+_STALE_URL_MARKERS = (
+    "http error 403", "forbidden", "unable to download video data",
+    "http error 503", "service unavailable",
+)
 
 
 def _is_retryable_download_error(message):
@@ -84,7 +91,12 @@ class YtDlpClient:
             # ("N bytes read, M more expected") retries just that chunk instead of
             # failing the whole download; also smooths the throttled speed.
             "http_chunk_size": 10 * 1024 * 1024,
-            "retries": 10,
+            # Deliberately low: every internal retry re-requests the *same* signed
+            # URL, so a 403/503 loop can only be ended by re-extracting (see
+            # `_download`). 10 retries with yt-dlp's exponential backoff turned one
+            # dead URL into a 24-minute wait for the user; 3 fails fast instead.
+            "retries": 3,
+            # Fragments are small and their retry is cheap, so keep those generous.
             "fragment_retries": 10,
             "continuedl": True,
         }

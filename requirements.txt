@@ -9,4 +9,8 @@ TgCrypto==1.2.5
 yt-dlp==2026.8.18.122307.dev0
 yt-dlp-ejs
 curl_cffi>=0.10,<0.16
-bgutil-ytdlp-pot-provider
+# PO-token plugin. MUST stay in lockstep with the pot-provider image tag in
+# docker-compose.yml: a major-version mismatch makes yt-dlp refuse tokens
+# ("Plugin and HTTP server major versions are mismatched") and YouTube then
+# throttles every download to a crawl. Bump both lines together.
+bgutil-ytdlp-pot-provider==2.0.0

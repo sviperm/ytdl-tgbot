@@ -160,6 +160,41 @@ def test_download_does_not_retry_a_real_failure(tmp_dirs, monkeypatch):
     assert path is None and "unavailable" in error
 
 
+def test_download_retries_once_on_a_service_unavailable(tmp_dirs, monkeypatch):
+    """503 means the same thing as 403 here: that signed URL is dead, re-extract.
+
+    Seen in production: yt-dlp spent 24 minutes on one such URL before giving up,
+    and only the bot's own fresh-extraction retry finished the download.
+    """
+    from src.config import Config
+    client = YtDlpClient()
+    calls = []
+
+    def fake_once(url, out_dir, extractor_args=None, progress_hook=None):
+        calls.append(url)
+        if len(calls) == 1:
+            return None, None, ("ERROR: [download] Got error: HTTP Error 503: "
+                                "Service Unavailable. Giving up after 10 retries")
+        return os.path.join(out_dir, "vid1.mp4"), {"id": "vid1"}, None
+
+    monkeypatch.setattr(client, "_download_once", fake_once)
+    path, info, error = client._download("http://x", Config.DOWNLOAD_DIR)
+    assert len(calls) == 2, "a 503 must trigger exactly one retry"
+    assert path.endswith("vid1.mp4") and error is None
+
+
+def test_opts_fail_fast_so_the_fresh_extraction_retry_can_run(tmp_dirs):
+    """Internal retries must stay low; they retry the same dead URL forever.
+
+    10 of them with yt-dlp's exponential backoff is the 24-minute wait users saw,
+    so this pins the value the fix depends on.
+    """
+    client = YtDlpClient()
+    opts = client._opts()
+    assert opts["retries"] <= 3, "10 internal retries = 24 min burned on a dead URL"
+    assert opts["fragment_retries"] >= opts["retries"], "fragments are cheap to retry"
+
+
 def test_download_gives_up_after_the_retry(tmp_dirs, monkeypatch):
     from src.config import Config
     client = YtDlpClient()

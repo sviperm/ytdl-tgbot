@@ -1,6 +1,9 @@
 services:
   pot-provider:
-    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    # Pinned on purpose: the PO-token plugin pinned in requirements.txt must be
+    # the same major version, otherwise yt-dlp refuses tokens and downloads crawl.
+    # `:latest` silently drifted to a mismatch once — bump both together.
+    image: brainicism/bgutil-ytdlp-pot-provider:2.0.0
     container_name: bgutil-provider
     init: true
     restart: always
