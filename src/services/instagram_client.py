@@ -15,6 +15,7 @@ Returns {"shortcode", "caption", "media": [{"type": "video"|"image", "url"}]}.
 import re
 import json
 import asyncio
+from urllib.parse import urlsplit
 
 from src.config import Config
 from src.utils.logger import logger
@@ -102,13 +103,48 @@ def offload_url(shortcode, index, base=None):
     return f"{base or Config.IG_OFFLOAD_BASE}/{shortcode}/{index}"
 
 
-def offload_base_from(og_video, shortcode):
-    """Derive the offload base (https://host/offload) from a fixer og:video URL."""
+def absolute_url(url, fixer_url=None):
+    """Resolve a fixer-advertised URL against the fixer host if it is relative.
+
+    Some forks advertise the media path relative (``/videos/<code>/1``), which is
+    useless for downloading — it has to be pinned to the host that served the page.
+    """
+    if not url:
+        return ""
+    if url.startswith("//"):
+        return "https:" + url
+    if url.startswith("/"):
+        origin = urlsplit(fixer_url or Config.IG_FIXER_URL)
+        return f"{origin.scheme}://{origin.netloc}{url}"
+    return url
+
+
+def offload_base_from(og_video, shortcode, fixer_url=None):
+    """Derive the offload base from a fixer og:video URL.
+
+    Not a fixed ``/offload`` path: forks disagree (InstaFix serves
+    ``/offload/<code>/1``, kirkstagram ``/videos/<code>/1``), so the base is
+    whatever precedes the ``/<code>/<n>`` tail, resolved against the fixer host.
+    """
     if not og_video:
         return None
     url = og_video.split("?")[0].rstrip("/")
     m = re.search(r"^(.*)/" + re.escape(shortcode) + r"/\d+$", url)
-    return m.group(1) if m else None
+    return absolute_url(m.group(1), fixer_url) if m else None
+
+
+def is_fixer_media_url(url, fixer_url=None):
+    """True if the URL is served by a fixer/offload host.
+
+    Matched by host as well as path: those hosts only ever answer crawler UAs, and
+    what is ``/offload/`` on InstaFix is ``/videos/`` on kirkstagram.
+    """
+    parts = urlsplit(url or "")
+    if not parts.netloc:
+        return False
+    if parts.netloc == urlsplit(fixer_url or Config.IG_FIXER_URL).netloc:
+        return True
+    return "/offload/" in parts.path or "/videos/" in parts.path
 
 
 class InstagramClient:
@@ -233,7 +269,9 @@ class InstagramClient:
             return None
         if r.status_code != 200:
             return None
-        video = fixer_meta(r.text, "og:video")
+        # og:video comes back relative on some forks, and it is returned as-is to
+        # the caller, so pin it to the fixer host here.
+        video = absolute_url(fixer_meta(r.text, "og:video"), Config.IG_FIXER_URL)
         image = fixer_meta(r.text, "og:image").split("?")[0]  # drop ?thumbnail=1
         title = fixer_meta(r.text, "og:title")
         if video:
@@ -300,8 +338,9 @@ class InstagramClient:
         return await asyncio.to_thread(self._fetch, url)
 
     def _download_file(self, url, dest, on_progress=None):
-        # The offload host serves media only to crawler UAs (host-agnostic: match path).
-        ua = _BOT_UA if "/offload/" in url else _UA
+        # Fixer/offload hosts serve media only to crawler UAs (matched by host and
+        # path — the path differs between forks).
+        ua = _BOT_UA if is_fixer_media_url(url) else _UA
         return self.http.download(url, dest, headers={"User-Agent": ua},
                                   on_progress=on_progress)
 

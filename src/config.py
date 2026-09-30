@@ -65,15 +65,20 @@ class Config:
     # PO Token provider (bgutil HTTP server) for unlocking high-quality YouTube formats
     POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://127.0.0.1:4416")
 
-    # Instagram: proxy is what enables the direct (best quality) endpoints; without
-    # one the client falls back to the fixer service.
+    # Instagram: proxy is what enables the client's direct (best quality) endpoints;
+    # without one the client falls back to embed + the fixer service. Video posts do
+    # not depend on either: InstagramPlatform tries yt-dlp's own extractor first.
     IG_PROXY_URL = os.getenv("IG_PROXY_URL", "").strip()
 
     # doc_ids and fixer hosts change over time; override via env without a code change.
-    IG_FIXER_URL = os.getenv("IG_FIXER_URL", "https://www.instagram7.com").rstrip("/")
+    # Fixer hosts rot without notice (instagram7.com and ddinstagram.com both stopped
+    # resolving, which silently broke every Instagram video) — this is the first thing
+    # to check when video posts stop downloading.
+    IG_FIXER_URL = os.getenv("IG_FIXER_URL", "https://kirkstagram.com").rstrip("/")
     # Fallback offload base; the real one is derived per-request from the fixer's
-    # og:video (services move the offload host around). Defaults to the fixer host.
-    IG_OFFLOAD_BASE = os.getenv("IG_OFFLOAD_BASE", f"{IG_FIXER_URL}/offload").rstrip("/")
+    # og:video (services move the offload host around). The path is fork-specific:
+    # InstaFix serves /offload, kirkstagram /videos.
+    IG_OFFLOAD_BASE = os.getenv("IG_OFFLOAD_BASE", f"{IG_FIXER_URL}/videos").rstrip("/")
     IG_MOBILE_DOC_ID = os.getenv("IG_MOBILE_DOC_ID", "8845758582119845")
     IG_WEB_DOC_ID = os.getenv("IG_WEB_DOC_ID", "25531498899829322")
 

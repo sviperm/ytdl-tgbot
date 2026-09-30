@@ -8,6 +8,7 @@ from src.services.http import HttpClient
 from src.services.instagram_client import (
     InstagramClient, is_instagram_url, extract_shortcode, shortcode_to_pk,
     parse_gql_media, fixer_meta, offload_url, offload_base_from,
+    absolute_url, is_fixer_media_url,
 )
 
 FIXER = "https://fixer.example"
@@ -210,6 +211,34 @@ def test_offload_base_from():
     assert offload_base_from("https://h/other", "ABC") is None
 
 
+def test_offload_base_from_relative_og_video_is_pinned_to_the_fixer():
+    # kirkstagram advertises the media path relative to its own host
+    assert offload_base_from("/videos/ABC/1", "ABC") == FIXER + "/videos"
+    assert offload_base_from("/offload/ABC/1", "ABC") == FIXER + "/offload"
+    # a different shortcode than the one embedded in the URL is not a match
+    assert offload_base_from("/videos/OTHER/1", "ABC") is None
+
+
+def test_absolute_url():
+    assert absolute_url("") == ""
+    assert absolute_url("/videos/ABC/1") == FIXER + "/videos/ABC/1"
+    assert absolute_url("//cdn.example/x.mp4") == "https://cdn.example/x.mp4"
+    assert absolute_url("https://newhost.example/offload/ABC/1") == \
+        "https://newhost.example/offload/ABC/1"
+    # an explicit fixer host wins over the configured one
+    assert absolute_url("/videos/ABC/1", "https://other.example") == \
+        "https://other.example/videos/ABC/1"
+
+
+def test_is_fixer_media_url():
+    assert is_fixer_media_url(OFFLOAD + "/ABC/1")
+    assert is_fixer_media_url(FIXER + "/videos/ABC/1")
+    assert is_fixer_media_url("https://kirkstagram.com/videos/ABC/1")  # other fork host
+    assert not is_fixer_media_url("https://scontent.cdninstagram.com/v/t51/i.jpg")
+    assert not is_fixer_media_url("")
+    assert not is_fixer_media_url("/videos/ABC/1")  # relative: no host to judge
+
+
 def test_fetch_via_fixer_derives_offload_host_from_og_video():
     sm = {"is_video": True, "video_url": "x",
           "edge_media_to_caption": {"edges": [{"node": {"text": "c"}}]}}
@@ -222,6 +251,21 @@ def test_fetch_via_fixer_derives_offload_host_from_og_video():
     out = client._fetch_via_fixer("CODE")
     # video URL uses the host the fixer actually advertises, not the hardcoded default
     assert out["media"][0] == {"type": "video", "url": "https://newhost.example/offload/CODE/1"}
+
+
+def test_fetch_via_fixer_pins_a_relative_og_video_to_the_fixer_host():
+    sm = {"is_video": True, "video_url": "x",
+          "edge_media_to_caption": {"edges": [{"node": {"text": "c"}}]}}
+    fixer_html = '<meta property="og:video" content="/videos/CODE/1">'
+    http = FakeHttp({
+        "instagram.com/p/CODE/embed/captioned": FakeResponse(200, make_embed_html(sm)),
+        "fixer.example/p/CODE": FakeResponse(200, fixer_html),
+    })
+    client = InstagramClient(http)
+    out = client._fetch_via_fixer("CODE")
+    # a relative og:video is useless as a download URL, so it is pinned to the
+    # host that served it (kirkstagram-style forks advertise /videos/<code>/1)
+    assert out["media"][0] == {"type": "video", "url": FIXER + "/videos/CODE/1"}
 
 
 def test_fetch_via_api_carousel():
@@ -264,6 +308,15 @@ def test_download_file_uses_crawler_ua_for_offload(tmp_path):
     cdn_headers = http.calls[1][2]
     assert offload_headers["User-Agent"] == ig._BOT_UA
     assert cdn_headers["User-Agent"] == ig._UA
+
+
+def test_download_file_uses_crawler_ua_for_a_videos_path_fork(tmp_path):
+    # Forks disagree on the path — /offload on InstaFix, /videos on kirkstagram —
+    # so the crawler UA is picked by path as well as by host.
+    http = FakeHttp()
+    client = InstagramClient(http)
+    client._download_file("https://kirkstagram.com/videos/CODE/1", str(tmp_path / "v.mp4"))
+    assert http.calls[0][2]["User-Agent"] == ig._BOT_UA
 
 
 def test_download_file_forwards_progress(tmp_path):

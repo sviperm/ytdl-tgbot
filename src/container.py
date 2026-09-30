@@ -29,7 +29,7 @@ class Container:
 
         self.sender = TelegramSender()
         self.registry = PlatformRegistry([
-            InstagramPlatform(instagram_client, video),   # instagram.com
+            InstagramPlatform(instagram_client, video, ytdlp),  # instagram.com
             PornHubPlatform(ytdlp, video),                # pornhub.com
             YouTubePlatform(ytdlp, video),                # youtube.com / youtu.be
             GenericPlatform(ytdlp, video),                # any other http(s) (last)

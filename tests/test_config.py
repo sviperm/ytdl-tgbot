@@ -80,13 +80,14 @@ def test_instagram_defaults(monkeypatch):
     cfg = namespace["Config"]
 
     assert cfg.IG_PROXY_URL == ""
-    assert cfg.IG_FIXER_URL == "https://www.instagram7.com"
+    assert cfg.IG_FIXER_URL == "https://kirkstagram.com"
     assert cfg.IG_MOBILE_DOC_ID == "8845758582119845"
     assert cfg.IG_WEB_DOC_ID == "25531498899829322"
     assert cfg.LOG_LEVEL == "INFO"
     assert cfg.MAX_CONCURRENT_DOWNLOADS == 2
     # the offload base is derived from the fixer host, not hardcoded separately
-    assert cfg.IG_OFFLOAD_BASE == cfg.IG_FIXER_URL + "/offload"
+    # (the path itself is fork-specific: InstaFix /offload, kirkstagram /videos)
+    assert cfg.IG_OFFLOAD_BASE == cfg.IG_FIXER_URL + "/videos"
 
 
 def test_fixer_url_trailing_slash_stripped_and_offload_follows(monkeypatch):
@@ -99,4 +100,4 @@ def test_fixer_url_trailing_slash_stripped_and_offload_follows(monkeypatch):
     cfg = namespace["Config"]
 
     assert cfg.IG_FIXER_URL == "https://other.example"
-    assert cfg.IG_OFFLOAD_BASE == "https://other.example/offload"
+    assert cfg.IG_OFFLOAD_BASE == "https://other.example/videos"

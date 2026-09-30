@@ -117,8 +117,9 @@ URLS = [
     ),
 
     # --- Instagram -----------------------------------------------------------
-    # A reel: the single-video case, sent as one item. The e2e run is the only test
-    # that exercises the fixer's offload host actually serving video bytes.
+    # A reel: the single-video case, and the path that goes through yt-dlp's own
+    # extractor rather than the embed + fixer chain (a dead fixer host used to break
+    # every video post, so this row is the one that would notice if that path broke).
     Link(
         name="instagram-reel-portrait",
         url="https://www.instagram.com/reel/DZ9sTMZMX7I/",
